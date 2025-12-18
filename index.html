@@ -8,6 +8,15 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script>
+      // Shim para evitar erro de "process is not defined" no navegador
+      window.process = { 
+        env: { 
+          API_KEY: '',
+          SUPABASE_URL: '',
+          SUPABASE_ANON_KEY: ''
+        } 
+      };
+      
       tailwind.config = {
         theme: {
           extend: {
@@ -31,24 +40,21 @@
     </script>
     <style>
       body { background-color: #f3f4f6; }
-      /* Hide scrollbar for clean mobile look */
-      .no-scrollbar::-webkit-scrollbar {
-        display: none;
-      }
-      .no-scrollbar {
-        -ms-overflow-style: none;
-        scrollbar-width: none;
-      }
-      /* Custom scrollbar for desktop lists */
-      .custom-scrollbar::-webkit-scrollbar {
-        width: 4px;
-      }
-      .custom-scrollbar::-webkit-scrollbar-track {
-        background: #f1f1f1;
-      }
-      .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: #ccc;
-        border-radius: 10px;
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: #ccc; border-radius: 10px; }
+      
+      /* Previne tela branca mostrando um loader básico antes do React montar */
+      #root:empty::before {
+        content: "Carregando Ciclus RD...";
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        font-family: sans-serif;
+        color: #666;
       }
     </style>
   <script type="importmap">
@@ -66,5 +72,7 @@
 </head>
   <body>
     <div id="root"></div>
+    <!-- Script de entrada necessário para deploys fora do AI Studio -->
+    <script type="module" src="./index.tsx"></script>
   </body>
 </html>
