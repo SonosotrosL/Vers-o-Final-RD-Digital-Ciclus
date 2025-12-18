@@ -1,0 +1,8 @@
+{
+  "name": "Versão Final RD Digital Ciclus",
+  "description": "Digital Daily Report system for field operations management, replacing paper workflows with geolocation and digital approval.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera"
+  ]
+}
