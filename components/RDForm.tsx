@@ -2,49 +2,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ServiceCategory, RDData, RDStatus, AttendanceRecord, GeoLocation, User, ProductionMetrics, Employee, Base, Shift, UserRole, TrackSegment } from '../types';
 import { getEmployees, getUsers } from '../services/storageService';
-import { MapPin, Users, Save, RefreshCw, CheckCircle, Camera, AlertTriangle, FileText, Clock, Map, Search, ChevronDown, Navigation, ArrowRightLeft, CornerDownRight, UserCheck, Calendar, RotateCcw, Lock, Play, Square, Timer, Ruler, Image as ImageIcon, MapPinned, Plus, Trash2, Calculator, Loader2 } from 'lucide-react';
+import { MapPin, Users, Save, RefreshCw, AlertTriangle, FileText, Clock, Map, Lock, Play, Square, Ruler, Image as ImageIcon, Trash2, Calculator, Loader2, Calendar, UserCheck, Navigation2, Footprints, ChevronRight, Camera, Crosshair, MapPinned } from 'lucide-react';
 
 interface RDFormProps {
   currentUser: User;
-  onSave: (data: RDData) => Promise<void>; // Make async
+  onSave: (data: RDData) => Promise<void>; 
   onCancel: () => void;
-  existingData?: RDData; // For editing/resubmitting
+  existingData?: RDData; 
 }
 
-// Helper to get local date string YYYY-MM-DD correctly
-const getLocalDateString = (dateObj?: Date) => {
-  const d = dateObj || new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-// Helper for local time HH:mm
-const getLocalTimeString = (dateObj?: Date) => {
-    const d = dateObj || new Date();
-    const hours = String(d.getHours()).padStart(2, '0');
-    const mins = String(d.getMinutes()).padStart(2, '0');
-    return `${hours}:${mins}`;
-};
-
-// Haversine Formula
-const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-  const R = 6371e3; // Earth radius in meters
-  const φ1 = lat1 * Math.PI / 180;
-  const φ2 = lat2 * Math.PI / 180;
-  const Δφ = (lat2 - lat1) * Math.PI / 180;
-  const Δλ = (lon2 - lon1) * Math.PI / 180;
-
-  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-            Math.cos(φ1) * Math.cos(φ2) *
-            Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return R * c; // Distance in meters
-};
-
-// Explicit ordered list for widths
+const STEP_LENGTH_METERS = 0.75; 
 const WIDTH_OPTIONS = [
     { value: '1', label: 'Beira de Calçada' },
     { value: '1.5', label: 'Canteiro Central' },
@@ -53,761 +20,612 @@ const WIDTH_OPTIONS = [
 ];
 
 export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, existingData }) => {
-  // --- State ---
-  const [rdDate, setRdDate] = useState<string>(
-    existingData?.date ? existingData.date.split('T')[0] : getLocalDateString()
-  );
-  const [rdTime, setRdTime] = useState<string>(
-    existingData?.date 
-        ? new Date(existingData.date).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'}) 
-        : getLocalTimeString()
-  );
-
+  // --- Estados do Formulário ---
+  const [rdDate, setRdDate] = useState<string>(existingData?.date ? existingData.date.split('T')[0] : new Date().toISOString().split('T')[0]);
+  const [rdTime, setRdTime] = useState<string>(existingData?.date ? new Date(existingData.date).toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'}) : new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'}));
   const [base, setBase] = useState<Base>(existingData?.base || Base.NORTE);
   const [shift, setShift] = useState<Shift>(existingData?.shift || Shift.DIURNO);
-  const [serviceCategory, setServiceCategory] = useState<ServiceCategory>(
-    existingData?.serviceCategory || ServiceCategory.MUTIRAO
-  );
-  
+  const [serviceCategory, setServiceCategory] = useState<ServiceCategory>(existingData?.serviceCategory || ServiceCategory.MUTIRAO);
   const [selectedSupervisorId, setSelectedSupervisorId] = useState<string>(existingData?.supervisorId || '');
   const [availableSupervisors, setAvailableSupervisors] = useState<User[]>([]);
-
+  
   const [street, setStreet] = useState(existingData?.street || '');
   const [neighborhood, setNeighborhood] = useState(existingData?.neighborhood || '');
   const [perimeter, setPerimeter] = useState(existingData?.perimeter || '');
-  
   const [nearbyStreets, setNearbyStreets] = useState<string[]>([]);
-  const [isLoadingNearby, setIsLoadingNearby] = useState(false);
+  const [nearbyNeighborhoods, setNearbyNeighborhoods] = useState<string[]>([]);
   const [selectedPerimeterStreets, setSelectedPerimeterStreets] = useState<string[]>([]);
-
-  const [metrics, setMetrics] = useState<ProductionMetrics>(existingData?.metrics || {
-    capinaM: 0,
-    pinturaViasM: 0,
-    pinturaPostesUnd: 0,
-    rocagemM2: 0,
-    varricaoM: 0
-  });
-
+  
+  const [metrics, setMetrics] = useState<ProductionMetrics>(existingData?.metrics || { capinaM: 0, pinturaViasM: 0, pinturaPostesUnd: 0, rocagemM2: 0, varricaoM: 0 });
   const [observations, setObservations] = useState(existingData?.observations || '');
-
-  // --- LOCATION & TRACKING STATE (NEW SEGMENT LOGIC) ---
   const [segments, setSegments] = useState<TrackSegment[]>(existingData?.segments || []);
   
-  // Active Tracking Session State
-  const [activeSegmentType, setActiveSegmentType] = useState<'CAPINA' | 'ROCAGEM' | null>(null);
+  // --- Estados do Odômetro e Rastreamento ---
+  const [activeSegmentType, setActiveSegmentType] = useState<'CAPINAÇÃO' | 'ROCAGEM' | null>(null);
   const [isTracking, setIsTracking] = useState(false);
   const [trackStartTime, setTrackStartTime] = useState<number | null>(null);
   const [currentStartLocation, setCurrentStartLocation] = useState<GeoLocation | undefined>(undefined);
   const [currentTrackPoints, setCurrentTrackPoints] = useState<{lat: number, lng: number}[]>([]);
-  const [currentDistance, setCurrentDistance] = useState(0);
-  const [elapsedTime, setElapsedTime] = useState(0);
   
-  // Pending Finalization (For Rocagem Width Input)
+  const [currentSteps, setCurrentSteps] = useState(0);
+  const [currentDistance, setCurrentDistance] = useState(0);
+  const [isMoving, setIsMoving] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
   const [pendingSegment, setPendingSegment] = useState<Partial<TrackSegment> | null>(null);
-  const [rocagemWidth, setRocagemWidth] = useState<string>(''); // String for input handling
-
-  const [isLoadingLoc, setIsLoadingLoc] = useState(false);
+  const [rocagemWidth, setRocagemWidth] = useState<string>('');
+  
+  // --- Estados de GPS e UI ---
+  const [loadingGPS, setLoadingGPS] = useState<{ active: boolean, message: string }>({ active: false, message: '' });
   const [gpsAccuracy, setGpsAccuracy] = useState<number | undefined>(undefined);
   const [isSaving, setIsSaving] = useState(false);
   
+  const [photoBefore, setPhotoBefore] = useState<string>(existingData?.photoBeforeUrl || '');
+  const [photoAfter, setPhotoAfter] = useState<string>(existingData?.photoAfterUrl || '');
+  const photoBeforeInputRef = useRef<HTMLInputElement>(null);
+  const photoAfterInputRef = useRef<HTMLInputElement>(null);
+
   const watchIdRef = useRef<number | null>(null);
   const timerIntervalRef = useRef<any>(null);
+  const lastStepTimeRef = useRef<number>(0);
 
   const [attendance, setAttendance] = useState<AttendanceRecord[]>(existingData?.teamAttendance || []);
-  const [workPhoto, setWorkPhoto] = useState<string>(existingData?.workPhotoUrl || '');
-  
-  const workPhotoInputRef = useRef<HTMLInputElement>(null);
 
+  // --- Lógica de Inicialização ---
   useEffect(() => {
     const loadInitialData = async () => {
+        const allUsers = await getUsers();
+        const sups = allUsers.filter(u => u.role === UserRole.SUPERVISOR);
+        setAvailableSupervisors(sups);
+        
         if (currentUser.role === UserRole.SUPERVISOR) {
             setSelectedSupervisorId(currentUser.id);
-        } else {
-            const allUsers = await getUsers();
-            const sups = allUsers.filter(u => u.role === UserRole.SUPERVISOR);
-            setAvailableSupervisors(sups);
         }
 
-        if (existingData) return;
-
-        const allEmployees = await getEmployees();
-        let myTeam = allEmployees.filter(e => e.supervisorId === currentUser.id);
-        if (myTeam.length === 0) myTeam = allEmployees;
-
-        const initialAttendance: AttendanceRecord[] = myTeam.map(e => ({
-            employeeId: e.id,
-            name: e.name,
-            registration: e.registration,
-            role: e.role,
-            present: true
-        }));
-        setAttendance(initialAttendance);
+        if (!existingData) {
+            const allEmployees = await getEmployees();
+            let myTeam = allEmployees.filter(e => e.supervisorId === (selectedSupervisorId || currentUser.id));
+            if (myTeam.length === 0) myTeam = allEmployees;
+            setAttendance(myTeam.map(e => ({ employeeId: e.id, name: e.name, registration: e.registration, role: e.role, present: true })));
+        }
     };
     loadInitialData();
-  }, [currentUser, existingData]);
+  }, [currentUser, existingData, selectedSupervisorId]);
 
-  // Auto-Calculate Metrics from Segments
   useEffect(() => {
-    const totalCapina = segments
-        .filter(s => s.type === 'CAPINA')
-        .reduce((sum, s) => sum + s.calculatedValue, 0);
-    
-    const totalRocagem = segments
-        .filter(s => s.type === 'ROCAGEM')
-        .reduce((sum, s) => sum + s.calculatedValue, 0);
-
-    setMetrics(prev => ({
-        ...prev,
-        capinaM: parseFloat(totalCapina.toFixed(1)),
-        rocagemM2: parseFloat(totalRocagem.toFixed(1))
-    }));
-
-    // Auto-fill address from the first segment if empty
-    if (segments.length > 0 && !street) {
-        const first = segments[0];
-        if (first.startLocation.addressFromGPS) {
-             const parts = first.startLocation.addressFromGPS.split(',');
-             if (parts.length > 0) setStreet(parts[0]);
-        }
-        fetchNearbyStreets(segments[0].startLocation.lat, segments[0].startLocation.lng, '');
-    }
-
+    const totalCapina = segments.filter(s => s.type === 'CAPINAÇÃO').reduce((sum, s) => sum + s.calculatedValue, 0);
+    const totalRocagem = segments.filter(s => s.type === 'ROCAGEM').reduce((sum, s) => sum + s.calculatedValue, 0);
+    setMetrics(prev => ({ ...prev, capinaM: parseFloat(totalCapina.toFixed(1)), rocagemM2: parseFloat(totalRocagem.toFixed(1)) }));
   }, [segments]);
 
-  useEffect(() => {
-      return () => {
-          if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-          if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      };
-  }, []);
+  // --- Funções de GPS e Geolocalização ---
 
-  // --- Handlers ---
+  const getUltraResilientPosition = (): Promise<GeolocationPosition> => {
+    return new Promise((resolve, reject) => {
+      const options = { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 };
+      
+      // Tentativa 1: Alta Precisão
+      navigator.geolocation.getCurrentPosition(resolve, (err1) => {
+        console.warn("GPS Tentativa 1 (Alta Precisão) falhou", err1);
+        
+        // Tentativa 2: Precisão Padrão com mais tempo
+        navigator.geolocation.getCurrentPosition(resolve, (err2) => {
+           console.warn("GPS Tentativa 2 (Padrão) falhou", err2);
+           
+           // Tentativa 3: Baixa Precisão / Cache permitido
+           navigator.geolocation.getCurrentPosition(resolve, (err3) => {
+             console.error("Todas as tentativas de GPS falharam", err3);
+             reject(err3);
+           }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 });
+           
+        }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 });
+        
+      }, options);
+    });
+  };
 
-  const fetchNearbyStreets = async (lat: number, lng: number, currentStreetName: string) => {
-    if (!lat || !lng) return;
-    setIsLoadingNearby(true);
-    setNearbyStreets([]);
+  const calculateDistanceGPS = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371e3;
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  const fetchNearbyData = async (lat: number, lng: number) => {
     try {
-        const query = `
-            [out:json][timeout:25];
-            (
-              way["highway"]["name"](around:500,${lat},${lng});
-            );
-            out tags;
-        `;
+        // Correção da query Overpass para evitar erros de sintaxe
+        const query = `[out:json][timeout:15];(way["highway"]["name"](around:500,${lat},${lng});way["boundary"="administrative"]["admin_level"="10"](around:500,${lat},${lng}););out tags;`;
         const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
         const response = await fetch(url);
         if (response.ok) {
             const data = await response.json();
-            const names = new Set<string>();
-            data.elements.forEach((el: any) => {
+            const streetNames = new Set<string>();
+            const hoodNames = new Set<string>();
+            data.elements.forEach((el: any) => { 
                 if (el.tags && el.tags.name) {
-                     const t = el.tags.highway;
-                     if (t !== 'motorway' && t !== 'trunk') {
-                         names.add(el.tags.name);
-                     }
+                    if (el.tags.highway) streetNames.add(el.tags.name);
+                    else hoodNames.add(el.tags.name);
                 }
             });
-            const currentNorm = currentStreetName ? currentStreetName.toLowerCase().trim() : '';
-            const sorted = Array.from(names)
-                .filter(n => {
-                    const nameLower = n.toLowerCase();
-                    return !currentNorm || !nameLower.includes(currentNorm);
-                })
-                .sort();
-            setNearbyStreets(sorted.slice(0, 30));
+            setNearbyStreets(Array.from(streetNames).sort());
+            if (hoodNames.size > 0) setNearbyNeighborhoods(Array.from(hoodNames).sort());
         }
-    } catch (e) {
-        console.warn("Overpass API error", e);
-    } finally {
-        setIsLoadingNearby(false);
-    }
+    } catch (e) { console.warn("Overpass failed", e); }
   };
 
-  const fetchAddressReverse = async (lat: number, lng: number): Promise<{street: string, hood: string, full: string} | null> => {
+  const fetchAddressReverse = async (lat: number, lng: number): Promise<{street: string, hood: string} | null> => {
     try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); 
-        const response = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`,
-            { signal: controller.signal }
-        );
-        clearTimeout(timeoutId);
+        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`);
         if (response.ok) {
             const data = await response.json();
             if (data && data.address) {
                 const addr = data.address;
-                const foundStreet = addr.road || addr.street || addr.pedestrian || addr.path || addr.living_street || addr.residential || addr.highway || '';
-                const foundHood = addr.suburb || addr.neighbourhood || addr.city_district || addr.quarter || addr.district || addr.hamlet || addr.village || addr.town || addr.city || '';
-                if (foundStreet || foundHood) return { street: foundStreet, hood: foundHood, full: data.display_name };
+                const foundStreet = addr.road || addr.street || addr.pedestrian || addr.path || addr.living_street || '';
+                const foundHood = addr.suburb || addr.neighbourhood || addr.city_district || addr.district || '';
+                return { street: foundStreet, hood: foundHood };
             }
         }
     } catch (e) { console.warn("Nominatim failed", e); }
     return null;
   };
 
-  // --- Start Segment (Point A) ---
-  const handleStartSegment = (type: 'CAPINA' | 'ROCAGEM') => {
-      if (!('geolocation' in navigator)) { alert('GPS não suportado.'); return; }
-
-      setIsLoadingLoc(true);
-      setActiveSegmentType(type);
-
-      // 1. Capture Point A
-      navigator.geolocation.getCurrentPosition(async (position) => {
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
-          const accuracy = position.coords.accuracy;
-          setGpsAccuracy(accuracy);
-
-          // Address Point A logic
-          let addressDisplay = "GPS Capturado";
-          try {
-              const result = await fetchAddressReverse(lat, lng);
-              if (result) {
-                  addressDisplay = result.full || "Localização identificada";
-                  // If global address is empty, set it
-                  if (!street) {
-                      setStreet(result.street);
-                      setNeighborhood(result.hood);
-                      fetchNearbyStreets(lat, lng, result.street);
-                  }
-              }
-          } catch (e) { console.error(e); }
-
-          // Start Logic
-          const startLoc = { lat, lng, accuracy, timestamp: position.timestamp, addressFromGPS: addressDisplay };
-          setCurrentStartLocation(startLoc);
-          setTrackStartTime(Date.now());
-          setIsTracking(true);
-          setCurrentTrackPoints([{lat, lng}]);
-          setCurrentDistance(0);
-          setElapsedTime(0);
-          setIsLoadingLoc(false);
-
-          // Timer
-          if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-          timerIntervalRef.current = setInterval(() => {
-              setElapsedTime(prev => prev + 1);
-          }, 1000);
-
-          // Watch Position (Odometer)
-          if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-          watchIdRef.current = navigator.geolocation.watchPosition(
-              (pos) => {
-                  const newLat = pos.coords.latitude;
-                  const newLng = pos.coords.longitude;
-                  setCurrentTrackPoints(prev => {
-                      const lastPoint = prev[prev.length - 1];
-                      const dist = calculateDistance(lastPoint.lat, lastPoint.lng, newLat, newLng);
-                      if (dist > 5) { // Filter noise
-                          setCurrentDistance(d => d + dist);
-                          return [...prev, {lat: newLat, lng: newLng}];
-                      }
-                      return prev;
-                  });
-              },
-              (err) => console.warn("Watch Error", err),
-              { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-          );
-
-      }, (err) => {
-          alert("Erro ao capturar GPS inicial: " + err.message);
-          setIsLoadingLoc(false);
-          setActiveSegmentType(null);
-      }, { enableHighAccuracy: true, timeout: 20000 });
-  };
-
-  // --- Stop Segment (Point B) ---
-  const handleStopSegment = () => {
-      setIsLoadingLoc(true);
-      if (watchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-        watchIdRef.current = null;
-      }
-      if (timerIntervalRef.current) {
-          clearInterval(timerIntervalRef.current);
-          timerIntervalRef.current = null;
+  const handleStartSegment = async (type: 'CAPINAÇÃO' | 'ROCAGEM') => {
+      if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
+          try { await (DeviceMotionEvent as any).requestPermission(); } catch(e){}
       }
       
-      // Capture Point B
-      navigator.geolocation.getCurrentPosition(async (position) => {
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
-          const accuracy = position.coords.accuracy;
-          
-          let addressDisplay = "GPS Capturado";
-          try {
-              const result = await fetchAddressReverse(lat, lng);
-              if (result) addressDisplay = result.full;
-          } catch(e) {}
-
-          const endLoc = { lat, lng, accuracy, timestamp: position.timestamp, addressFromGPS: addressDisplay };
-          
-          const tempSegment: Partial<TrackSegment> = {
-              id: `seg-${Date.now()}`,
-              type: activeSegmentType!,
-              startedAt: new Date(trackStartTime!).toISOString(),
-              endedAt: new Date().toISOString(),
-              startLocation: currentStartLocation,
-              endLocation: endLoc,
-              distance: currentDistance,
-              pathPoints: currentTrackPoints
-          };
-
-          setIsTracking(false);
-          setIsLoadingLoc(false);
-          
-          // Determine next step based on type
-          if (activeSegmentType === 'ROCAGEM') {
-              setPendingSegment(tempSegment); // Needs Width Input
-              setRocagemWidth('');
-          } else {
-              // Capina - Save Immediately
-              const finalSeg = { ...tempSegment, calculatedValue: tempSegment.distance! } as TrackSegment;
-              setSegments(prev => [...prev, finalSeg]);
-              setActiveSegmentType(null);
-              setPendingSegment(null);
+      setLoadingGPS({ active: true, message: 'Capturando Local de Início...' });
+      setActiveSegmentType(type);
+      
+      try {
+        const pos = await getUltraResilientPosition();
+        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+        setGpsAccuracy(accuracy);
+        
+        // Dispara buscas paralelas (não bloqueia o início do trecho)
+        fetchNearbyData(lat, lng);
+        fetchAddressReverse(lat, lng).then(addr => {
+          if (addr) {
+            if (!street) setStreet(addr.street);
+            if (!neighborhood) setNeighborhood(addr.hood);
           }
+        });
 
-      }, (err) => {
-          alert("Erro ao capturar GPS final: " + err.message);
-          setIsTracking(false);
-          setIsLoadingLoc(false);
-          setActiveSegmentType(null);
-      }, { enableHighAccuracy: true, timeout: 15000 });
+        setCurrentStartLocation({ lat, lng, accuracy, timestamp: pos.timestamp, addressFromGPS: "Início" });
+        setTrackStartTime(Date.now());
+        setIsTracking(true);
+        setCurrentTrackPoints([{lat, lng}]);
+        setCurrentSteps(0);
+        setCurrentDistance(0);
+        setElapsedTime(0);
+        
+        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
+        window.addEventListener('devicemotion', handleMotion);
+        
+        if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = navigator.geolocation.watchPosition((p) => {
+            setGpsAccuracy(p.coords.accuracy);
+            const nLat = p.coords.latitude; const nLng = p.coords.longitude;
+            setCurrentTrackPoints(prev => {
+                const last = prev[prev.length - 1];
+                const d = calculateDistanceGPS(last.lat, last.lng, nLat, nLng);
+                // Registra pontos se houver deslocamento significativo
+                if (d > 10 || (d > 3 && isMoving)) return [...prev, {lat: nLat, lng: nLng}];
+                return prev;
+            });
+        }, null, { enableHighAccuracy: true });
+
+        setLoadingGPS({ active: false, message: '' });
+      } catch (err) {
+        setLoadingGPS({ active: false, message: '' });
+        setActiveSegmentType(null);
+        alert("Falha ao obter GPS. Certifique-se de que as permissões foram concedidas e que você está em um local aberto.");
+      }
+  };
+
+  const handleStopSegment = async () => {
+      setLoadingGPS({ active: true, message: 'Capturando Local de Término...' });
+      window.removeEventListener('devicemotion', handleMotion);
+      if (watchIdRef.current !== null) { navigator.geolocation.clearWatch(watchIdRef.current); watchIdRef.current = null; }
+      if (timerIntervalRef.current) { clearInterval(timerIntervalRef.current); timerIntervalRef.current = null; }
+      
+      try {
+        const pos = await getUltraResilientPosition();
+        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+        setGpsAccuracy(accuracy);
+        
+        const addrAtEnd = await fetchAddressReverse(lat, lng);
+        
+        const tempSegment: Partial<TrackSegment> = {
+            id: `seg-${Date.now()}`,
+            type: activeSegmentType!,
+            startedAt: new Date(trackStartTime!).toISOString(),
+            endedAt: new Date().toISOString(),
+            startLocation: currentStartLocation,
+            endLocation: { lat, lng, accuracy, timestamp: pos.timestamp },
+            street: addrAtEnd?.street || street || "Trecho Registrado",
+            neighborhood: addrAtEnd?.hood || neighborhood || "Bairro Registrado",
+            distance: currentDistance,
+            pathPoints: currentTrackPoints
+        };
+
+        setIsTracking(false);
+        setLoadingGPS({ active: false, message: '' });
+        
+        if (activeSegmentType === 'ROCAGEM') { 
+            setPendingSegment(tempSegment); 
+            setRocagemWidth(''); 
+        } else {
+            setSegments(prev => [...prev, { ...tempSegment, calculatedValue: tempSegment.distance! } as TrackSegment]);
+            setActiveSegmentType(null);
+            if (addrAtEnd) {
+                setStreet(addrAtEnd.street);
+                setNeighborhood(addrAtEnd.hood);
+            }
+        }
+      } catch (err) {
+        setLoadingGPS({ active: false, message: '' });
+        setIsTracking(false);
+        setActiveSegmentType(null);
+        alert("Falha ao capturar ponto final do GPS. O trecho foi encerrado, mas pode haver imprecisão no local de término.");
+      }
+  };
+
+  const handleForceUpdateLocation = async () => {
+    setLoadingGPS({ active: true, message: 'Atualizando Localização...' });
+    try {
+      const pos = await getUltraResilientPosition();
+      const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+      setGpsAccuracy(accuracy);
+      
+      // Busca dados de rua e bairro baseados na posição atual
+      fetchNearbyData(lat, lng);
+      const addr = await fetchAddressReverse(lat, lng);
+      
+      if (addr) {
+          if (addr.street) setStreet(addr.street);
+          if (addr.hood) setNeighborhood(addr.hood);
+      }
+      setLoadingGPS({ active: false, message: '' });
+    } catch (err: any) {
+      setLoadingGPS({ active: false, message: '' });
+      const errorMsg = err?.message || JSON.stringify(err);
+      console.error("Manual GPS update failed:", errorMsg);
+      alert("Não foi possível obter a localização. Verifique o sinal do GPS e as permissões do navegador.");
+    }
+  };
+
+  const handleMotion = (event: DeviceMotionEvent) => {
+    const accel = event.accelerationIncludingGravity;
+    if (!accel || accel.x === null || accel.y === null || accel.z === null) return;
+    const magnitude = Math.sqrt(accel.x ** 2 + accel.y ** 2 + accel.z ** 2);
+    const now = Date.now();
+    // Sensibilidade do acelerômetro para passos reais (previne distância fantasma)
+    if (magnitude > 13.0 && (now - lastStepTimeRef.current) > 400) {
+        setCurrentSteps(prev => prev + 1);
+        lastStepTimeRef.current = now;
+        setIsMoving(true);
+        setTimeout(() => { if (Date.now() - lastStepTimeRef.current > 2000) setIsMoving(false); }, 2500);
+    }
+  };
+
+  useEffect(() => { setCurrentDistance(currentSteps * STEP_LENGTH_METERS); }, [currentSteps]);
+
+  const handleCorrectionStreet = async (st: string) => {
+      setStreet(st);
+      try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(st + ', Belém, PA')}&limit=1&addressdetails=1`);
+          if (res.ok) {
+              const data = await res.json();
+              if (data && data[0] && data[0].address) {
+                  const nb = data[0].address.suburb || data[0].address.neighbourhood || data[0].address.city_district || "";
+                  if (nb) setNeighborhood(nb);
+              }
+          }
+      } catch(e){}
+  };
+
+  const handleAddPerimeterStreet = (st: string) => {
+    let n = [...selectedPerimeterStreets];
+    if (n.includes(st)) n = n.filter(s => s !== st); else n.push(st);
+    if (n.length > 2) n = [st];
+    if (n.length === 2) setPerimeter(`Entre ${n[0]} e ${n[1]}`);
+    else if (n.length === 1) setPerimeter(`Esquina com ${n[0]}`);
+    else setPerimeter('');
+    setSelectedPerimeterStreets(n);
   };
 
   const confirmRocagemSegment = () => {
       const w = parseFloat(rocagemWidth.replace(',', '.'));
-      if (!w || w <= 0) {
-          alert("Informe a largura do corte válida.");
-          return;
-      }
-      
-      const area = (pendingSegment!.distance || 0) * w;
-      
-      const finalSeg = { 
-          ...pendingSegment, 
-          width: w,
-          calculatedValue: area 
-      } as TrackSegment;
-
-      setSegments(prev => [...prev, finalSeg]);
+      if (!w || w <= 0) { alert("Largura inválida."); return; }
+      setSegments(prev => [...prev, { ...pendingSegment, width: w, calculatedValue: (pendingSegment!.distance || 0) * w } as TrackSegment]);
       setPendingSegment(null);
       setActiveSegmentType(null);
   };
 
-  const removeSegment = (id: string) => {
-      if(confirm("Remover este trecho?")) {
-          setSegments(prev => prev.filter(s => s.id !== id));
-      }
-  };
-
-  const formatTime = (seconds: number) => {
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = seconds % 60;
-      return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
-  };
-
-  const handleAddPerimeterStreet = (streetName: string) => {
-    let newSelection = [...selectedPerimeterStreets];
-    if (newSelection.includes(streetName)) {
-        newSelection = newSelection.filter(s => s !== streetName);
-    } else {
-        newSelection.push(streetName);
-    }
-    if (newSelection.length > 2) {
-        newSelection = [streetName];
-        setPerimeter(`Esquina com ${streetName}`);
-    } else if (newSelection.length === 2) {
-        setPerimeter(`Entre ${newSelection[0]} e ${newSelection[1]}`);
-    } else if (newSelection.length === 1) {
-        setPerimeter(`Esquina com ${newSelection[0]}`);
-    } else {
-        setPerimeter('');
-    }
-    setSelectedPerimeterStreets(newSelection);
-  };
-
-  const handleCorrectionClick = (streetName: string) => {
-      setStreet(streetName);
-      if (currentStartLocation) fetchNearbyStreets(currentStartLocation.lat, currentStartLocation.lng, streetName);
-  };
-
-  const handleManualRefreshPerimeter = () => {
-      if (segments.length > 0) fetchNearbyStreets(segments[0].startLocation.lat, segments[0].startLocation.lng, street);
-  };
-
-  const handleWorkPhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>, target: 'before' | 'after') => {
       const file = e.target.files?.[0];
       if (file) {
           const reader = new FileReader();
-          reader.onloadend = () => setWorkPhoto(reader.result as string);
+          reader.onloadend = () => {
+              if (target === 'before') setPhotoBefore(reader.result as string);
+              else setPhotoAfter(reader.result as string);
+          };
           reader.readAsDataURL(file);
       }
   };
 
-  const togglePresence = (index: number) => {
-    const newAttendance = [...attendance];
-    newAttendance[index].present = !newAttendance[index].present;
-    setAttendance(newAttendance);
-  };
-
+  const removeSegment = (id: string) => { if(confirm("Remover trecho?")) setSegments(prev => prev.filter(s => s.id !== id)); };
+  
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedSupervisorId) {
-        alert("Erro: Supervisor Responsável não identificado.");
-        return;
-    }
-    if (segments.length === 0 && !existingData) {
-       if (!confirm("Nenhum trecho de GPS capturado. Deseja continuar apenas com dados manuais?")) return;
-    }
-    
-    const totalProduction = metrics.capinaM + metrics.pinturaViasM + metrics.pinturaPostesUnd + metrics.rocagemM2 + (metrics.varricaoM || 0);
-    if (totalProduction <= 0 && observations.trim() === '') {
-      alert("Insira a quantidade produzida ou uma observação.");
-      return;
-    }
-
+    if (!selectedSupervisorId) { alert("Selecione o Supervisor."); return; }
+    if (!photoBefore && !photoAfter) { alert("Anexe fotos de evidência (Antes e Depois)."); return; }
     setIsSaving(true);
-    const combinedDateStr = `${rdDate}T${rdTime}:00`;
-    const finalDate = new Date(combinedDateStr);
-    
-    const rdToSave: RDData = {
-      id: existingData?.id || ``, // Backend will assign ID for new ones
-      date: finalDate.toISOString(),
-      foremanId: currentUser.id,
-      foremanName: currentUser.name,
-      foremanRegistration: currentUser.registration,
-      supervisorId: selectedSupervisorId,
-      status: RDStatus.PENDING,
-      base,
-      shift,
-      serviceCategory,
-      street,
-      neighborhood,
-      perimeter,
-      metrics,
+    await onSave({
+      id: existingData?.id || ``, 
+      date: new Date(`${rdDate}T${rdTime}:00`).toISOString(),
+      foremanId: currentUser.id, foremanName: currentUser.name, foremanRegistration: currentUser.registration,
+      supervisorId: selectedSupervisorId, status: RDStatus.PENDING,
+      base, shift, serviceCategory, street, neighborhood, perimeter, metrics,
       location: segments.length > 0 ? segments[0].startLocation : undefined, 
-      segments: segments,
-      teamAttendance: attendance,
-      workPhotoUrl: workPhoto,
-      observations,
-      createdAt: Date.now()
-    };
-    await onSave(rdToSave);
+      segments: segments, teamAttendance: attendance, 
+      photoBeforeUrl: photoBefore, photoAfterUrl: photoAfter,
+      workPhotoUrl: photoAfter || photoBefore, 
+      observations, createdAt: Date.now()
+    });
     setIsSaving(false);
   };
 
-  const renderMetricInputs = () => {
-    return (
-      <div className="space-y-4">
-        {/* Info Banner */}
-        <div className="bg-blue-50 p-3 rounded-lg border border-blue-200 text-xs text-blue-800 flex items-center gap-2">
-            <Calculator className="w-4 h-4" />
-            <p>Os campos de <strong>Capinação</strong> e <strong>Roçagem</strong> são preenchidos automaticamente pelo GPS.</p>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
-            {/* Capinação - READ ONLY */}
-            <div className="relative">
-                <label className="block text-xs font-bold text-gray-700 flex justify-between">
-                    Capinação e Raspagem (m)
-                    <span className="text-[9px] bg-green-100 text-green-700 px-1 rounded">AUTO GPS</span>
-                </label>
-                <div className="relative mt-1">
-                    <input type="number" value={metrics.capinaM} readOnly className="w-full p-2 border border-gray-300 rounded bg-gray-100 font-mono text-lg font-bold text-gray-600 cursor-not-allowed" />
-                    <Lock className="absolute right-3 top-3 w-4 h-4 text-gray-400" />
-                </div>
-                <p className="text-[10px] text-gray-400 mt-0.5">Soma dos trechos de Capinação</p>
-            </div>
-            
-            {/* Roçagem - READ ONLY */}
-            <div className="relative">
-                <label className="block text-xs font-bold text-gray-700 flex justify-between">
-                    Roçagem (m²)
-                    <span className="text-[9px] bg-green-100 text-green-700 px-1 rounded">AUTO GPS</span>
-                </label>
-                <div className="relative mt-1">
-                    <input type="number" value={metrics.rocagemM2} readOnly className="w-full p-2 border border-gray-300 rounded bg-gray-100 font-mono text-lg font-bold text-gray-600 cursor-not-allowed" />
-                    <Lock className="absolute right-3 top-3 w-4 h-4 text-gray-400" />
-                </div>
-                <p className="text-[10px] text-gray-400 mt-0.5">Soma (Distância x Largura)</p>
-            </div>
-            
-            {/* Manual Fields */}
-            <div>
-                <label className="block text-xs font-medium text-gray-600">Varrição (m)</label>
-                <input type="number" min="0" step="0.1" value={metrics.varricaoM || ''} onChange={e => setMetrics({...metrics, varricaoM: parseFloat(e.target.value) || 0})} className="w-full p-2 border rounded mt-1 font-mono text-lg focus:ring-2 focus:ring-ciclus-500 outline-none" placeholder="0.0" />
-            </div>
-            
-            <div>
-                <label className="block text-xs font-medium text-gray-600">Pintura de Vias (m)</label>
-                <input type="number" min="0" step="0.1" value={metrics.pinturaViasM || ''} onChange={e => setMetrics({...metrics, pinturaViasM: parseFloat(e.target.value) || 0})} className="w-full p-2 border rounded mt-1 font-mono text-lg focus:ring-2 focus:ring-ciclus-500 outline-none" placeholder="0.0" />
-            </div>
-            
-            <div>
-                <label className="block text-xs font-medium text-gray-600">Pintura de Postes (Unid)</label>
-                <input type="number" min="0" step="1" value={metrics.pinturaPostesUnd || ''} onChange={e => setMetrics({...metrics, pinturaPostesUnd: parseFloat(e.target.value) || 0})} className="w-full p-2 border rounded mt-1 font-mono text-lg focus:ring-2 focus:ring-ciclus-500 outline-none" placeholder="0" />
-            </div>
-        </div>
-      </div>
-    );
-  };
-
   return (
-    <div className="bg-white shadow-lg rounded-lg overflow-hidden mb-10">
-      <div className="bg-ciclus-700 p-4 text-white flex justify-between items-center sticky top-0 z-10">
-        <h2 className="text-lg font-bold">{existingData ? 'Corrigir RD' : 'Novo Relatório Diário'}</h2>
-        <span className="text-xs bg-ciclus-800 px-2 py-1 rounded font-mono">{currentUser.name} (Mat: {currentUser.registration})</span>
-      </div>
-
-      <form onSubmit={handleSubmit} className="p-6 space-y-8">
-        
-        {currentUser.role !== UserRole.SUPERVISOR && (
-            <section className="bg-yellow-50 p-4 rounded border border-yellow-200">
-                <label className="block text-sm font-bold text-yellow-800 mb-2 flex items-center gap-2"><UserCheck className="w-4 h-4" /> Supervisor Responsável</label>
-                <select required value={selectedSupervisorId} onChange={e => setSelectedSupervisorId(e.target.value)} className="w-full p-2 border border-yellow-300 rounded bg-white text-gray-700">
-                    <option value="">Selecione o Supervisor...</option>
-                    {availableSupervisors.map(s => <option key={s.id} value={s.id}>{s.name} (Mat: {s.registration})</option>)}
-                </select>
-            </section>
-        )}
-
-        <section>
-          <h3 className="text-sm font-bold text-gray-400 uppercase mb-3 flex items-center gap-2"><Clock className="w-4 h-4" /> 1. Dados Operacionais</h3>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-             <div><label className="block text-xs font-medium text-gray-600 mb-1 flex items-center gap-1"><Calendar className="w-3 h-3" /> Data</label><input type="date" required value={rdDate} onChange={e => setRdDate(e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-md font-bold text-gray-700 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-ciclus-500 outline-none" /></div>
-             <div><label className="block text-xs font-medium text-gray-600 mb-1 flex items-center gap-1"><Clock className="w-3 h-3" /> Horário</label><input type="time" required value={rdTime} onChange={e => setRdTime(e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-md font-bold text-gray-700 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-ciclus-500 outline-none" /></div>
-             <div><label className="block text-xs font-medium text-gray-600 mb-1">Base Operacional</label><select value={base} onChange={e => setBase(e.target.value as Base)} className="w-full p-2 text-sm border border-gray-300 rounded-md">{Object.values(Base).map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
-             <div><label className="block text-xs font-medium text-gray-600 mb-1">Turno</label><select value={shift} onChange={e => setShift(e.target.value as Shift)} className="w-full p-2 text-sm border border-gray-300 rounded-md">{Object.values(Shift).map((s) => <option key={s} value={s}>{s}</option>)}</select></div>
+    <div className="bg-white shadow-lg rounded-lg overflow-hidden mb-10 relative">
+      {loadingGPS.active && (
+          <div className="absolute inset-0 bg-black/70 z-[100] flex flex-col items-center justify-center text-white p-6 text-center animate-in fade-in">
+              <div className="bg-white/10 p-10 rounded-3xl backdrop-blur-xl border border-white/20 shadow-2xl flex flex-col items-center gap-4">
+                  <div className="relative">
+                    <RefreshCw className="w-16 h-16 animate-spin text-ciclus-400 opacity-20" />
+                    <Navigation2 className="w-8 h-8 text-white absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-bounce" />
+                  </div>
+                  <p className="font-black uppercase tracking-widest text-lg">{loadingGPS.message}</p>
+                  <p className="text-xs opacity-60">Isso pode levar alguns segundos dependendo da visibilidade do céu e do sinal da rede.</p>
+              </div>
           </div>
+      )}
+
+      <div className="bg-ciclus-700 p-4 text-white flex justify-between items-center sticky top-0 z-40 shadow-md">
+        <h2 className="text-lg font-bold">{existingData ? 'Corrigir RD' : 'Novo Relatório Diário'}</h2>
+        <span className="text-xs bg-ciclus-800 px-2 py-1 rounded font-mono">{currentUser.name}</span>
+      </div>
+      
+      <form onSubmit={handleSubmit} className="p-6 space-y-8">
+        <section className="bg-yellow-50 p-4 rounded border border-yellow-200">
+            <label className="block text-sm font-bold text-yellow-800 mb-2 flex items-center gap-2"><UserCheck className="w-4 h-4" /> Supervisor Responsável</label>
+            <select required value={selectedSupervisorId} onChange={e => setSelectedSupervisorId(e.target.value)} className="w-full p-2 border border-yellow-300 rounded bg-white text-gray-700 font-bold">
+                <option value="">Selecione o Supervisor...</option>
+                {availableSupervisors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
         </section>
 
+        <section><h3 className="text-sm font-bold text-gray-400 uppercase mb-3 flex items-center gap-2"><Clock className="w-4 h-4" /> 1. Dados Operacionais</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">Data</label><input type="date" required value={rdDate} onChange={e => setRdDate(e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-md font-bold text-gray-700 bg-gray-50" /></div>
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">Horário</label><input type="time" required value={rdTime} onChange={e => setRdTime(e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-md font-bold text-gray-700 bg-gray-50" /></div>
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">Base</label><select value={base} onChange={e => setBase(e.target.value as Base)} className="w-full p-2 text-sm border border-gray-300 rounded-md font-bold">{Object.values(Base).map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">Turno</label><select value={shift} onChange={e => setShift(e.target.value as Shift)} className="w-full p-2 text-sm border border-gray-300 rounded-md font-bold">{Object.values(Shift).map((s) => <option key={s} value={s}>{s}</option>)}</select></div>
+            </div>
+        </section>
+        
         <section className="border-t border-gray-100 pt-6">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2"><MapPin className="w-4 h-4" /> 2. Rastreamento de Trechos (GPS)</h3>
-            {gpsAccuracy && <span className={`text-[10px] ${gpsAccuracy > 50 ? 'text-red-500 font-bold' : 'text-green-600'}`}>Precisão: {gpsAccuracy.toFixed(0)}m {gpsAccuracy > 50 && "(Fraco)"}</span>}
+            <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2"><MapPin className="w-4 h-4" /> 2. Controle de Trechos</h3>
+            {gpsAccuracy && <div className="text-[10px] font-bold uppercase flex items-center gap-1">GPS: <span className={gpsAccuracy < 30 ? 'text-green-600' : 'text-red-600'}>{gpsAccuracy.toFixed(0)}m</span></div>}
           </div>
-
-          {/* --- NEW TRACKING INTERFACE --- */}
+          
           <div className="space-y-4">
-              
-              {/* STATUS: IDLE -> Show Buttons */}
               {!isTracking && !pendingSegment && (
-                  <div className="grid grid-cols-2 gap-4">
-                      <button type="button" onClick={() => handleStartSegment('CAPINA')} disabled={isLoadingLoc} className="bg-ciclus-600 hover:bg-ciclus-700 text-white py-4 rounded-lg font-bold shadow-lg flex flex-col items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50">
-                           {isLoadingLoc ? <RefreshCw className="w-6 h-6 animate-spin" /> : <Play className="w-6 h-6 fill-current" />}
-                           <span className="text-xs sm:text-sm">INICIAR CAPINAÇÃO</span>
-                      </button>
-                      <button type="button" onClick={() => handleStartSegment('ROCAGEM')} disabled={isLoadingLoc} className="bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-lg font-bold shadow-lg flex flex-col items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50">
-                           {isLoadingLoc ? <RefreshCw className="w-6 h-6 animate-spin" /> : <Play className="w-6 h-6 fill-current" />}
-                           <span className="text-xs sm:text-sm">INICIAR ROÇAGEM</span>
-                      </button>
-                  </div>
+                <div className="grid grid-cols-2 gap-4">
+                    <button type="button" onClick={() => handleStartSegment('CAPINAÇÃO')} className="bg-ciclus-600 hover:bg-ciclus-700 text-white py-5 rounded-xl font-bold shadow-lg flex flex-col items-center justify-center gap-2 active:scale-95 transition-all">
+                        <Play className="w-6 h-6 fill-current" />
+                        <span className="text-xs sm:text-sm uppercase tracking-wider">Iniciar Capinação</span>
+                    </button>
+                    <button type="button" onClick={() => handleStartSegment('ROCAGEM')} className="bg-emerald-600 hover:bg-emerald-700 text-white py-5 rounded-xl font-bold shadow-lg flex flex-col items-center justify-center gap-2 active:scale-95 transition-all">
+                        <Play className="w-6 h-6 fill-current" />
+                        <span className="text-xs sm:text-sm uppercase tracking-wider">Iniciar Roçagem</span>
+                    </button>
+                </div>
               )}
-
-              {/* STATUS: TRACKING -> Show Metrics and Stop Button */}
               {isTracking && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 animate-in fade-in">
-                       <div className="flex justify-between items-center mb-4">
-                           <span className="text-xs font-bold uppercase bg-blue-200 text-blue-800 px-2 py-1 rounded animate-pulse">
-                               Em Andamento: {activeSegmentType}
-                           </span>
-                           <span className="font-mono text-xl font-bold text-gray-700">{formatTime(elapsedTime)}</span>
-                       </div>
-                       
-                       <div className="text-center mb-6">
-                           <p className="text-gray-500 text-xs uppercase mb-1">Distância Percorrida</p>
-                           <p className="text-4xl font-bold text-blue-700">{currentDistance.toFixed(0)} <span className="text-lg text-gray-400">metros</span></p>
-                       </div>
-
-                       <button type="button" onClick={handleStopSegment} disabled={isLoadingLoc} className="w-full bg-red-600 hover:bg-red-700 text-white py-4 rounded-lg font-bold shadow-lg flex items-center justify-center gap-2">
-                           {isLoadingLoc ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Square className="w-5 h-5 fill-current" />}
-                           FINALIZAR TRECHO
-                       </button>
-                  </div>
-              )}
-
-              {/* STATUS: PENDING WIDTH (Rocagem) -> Input Width */}
-              {pendingSegment && activeSegmentType === 'ROCAGEM' && (
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 animate-in fade-in">
-                      <h4 className="font-bold text-emerald-800 text-sm mb-2 flex items-center gap-2"><Ruler className="w-4 h-4" /> Cálculo de Área (Roçagem)</h4>
-                      <p className="text-xs text-gray-600 mb-4">O trecho teve <strong>{pendingSegment.distance?.toFixed(0)} metros</strong>. Informe a largura média do corte para calcular a área.</p>
-                      
-                      <div className="mb-4">
-                        <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Selecione a largura aproximada:</label>
-                        <div className="grid grid-cols-2 gap-2">
-                           {WIDTH_OPTIONS.map((opt) => (
-                               <button 
-                                 key={opt.value} 
-                                 type="button" 
-                                 onClick={() => setRocagemWidth(opt.value)}
-                                 className={`py-3 px-3 rounded border text-left transition-colors flex flex-col justify-center ${rocagemWidth === opt.value ? 'bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-300' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
-                               >
-                                 <span className="font-bold text-lg">{opt.value}m</span>
-                                 <span className={`text-[10px] uppercase font-medium ${rocagemWidth === opt.value ? 'text-emerald-100' : 'text-gray-400'}`}>{opt.label}</span>
-                               </button>
-                           ))}
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-5 animate-in fade-in slide-in-from-top-2">
+                    <div className="flex justify-between items-center mb-4">
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold uppercase bg-blue-200 text-blue-800 px-3 py-1 rounded-full">{activeSegmentType}</span>
+                            {isMoving && <div className="flex items-center gap-1 text-[10px] text-green-600 font-bold animate-pulse"><Navigation2 className="w-3 h-3 rotate-45" /> EM MOVIMENTO</div>}
                         </div>
-                      </div>
-
-                      <div className="flex gap-2 items-end pt-2 border-t border-emerald-100">
-                          <div className="flex-1">
-                              <label className="text-[10px] font-bold text-gray-500 uppercase">Ou digite (m)</label>
-                              <input 
-                                type="number" step="0.1" autoFocus
-                                value={rocagemWidth} onChange={e => setRocagemWidth(e.target.value)}
-                                className="w-full p-2 border border-emerald-300 rounded focus:ring-2 focus:ring-emerald-500 outline-none text-lg font-bold"
-                                placeholder="Ex: 2.5"
-                              />
-                          </div>
-                          <button type="button" onClick={confirmRocagemSegment} className="bg-emerald-600 text-white px-4 py-3 rounded font-bold hover:bg-emerald-700">
-                              Confirmar e Salvar
-                          </button>
-                      </div>
-                  </div>
+                        <span className="font-mono text-2xl font-black text-gray-800">{Math.floor(elapsedTime/60).toString().padStart(2,'0')}:{(elapsedTime%60).toString().padStart(2,'0')}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 mb-6">
+                        <div className="bg-white p-4 rounded-xl border border-blue-100 text-center shadow-sm">
+                            <p className="text-gray-400 text-[10px] uppercase font-bold mb-1">Distância</p>
+                            <p className="text-4xl font-black text-blue-700">{currentDistance.toFixed(1)}<span className="text-sm font-bold ml-1">m</span></p>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl border border-blue-100 text-center shadow-sm">
+                            <p className="text-gray-400 text-[10px] uppercase font-bold mb-1">Passos Reais</p>
+                            <p className="text-4xl font-black text-gray-700 flex items-center justify-center gap-1"><Footprints className="w-6 h-6 text-blue-400" /> {currentSteps}</p>
+                        </div>
+                    </div>
+                    <button type="button" onClick={handleStopSegment} className="w-full bg-red-600 hover:bg-red-700 text-white py-5 rounded-xl font-bold shadow-xl flex items-center justify-center gap-3 active:scale-95 transition-all text-lg uppercase tracking-widest">
+                        <Square className="w-6 h-6 fill-current" />
+                        Parar e Gravar Trecho
+                    </button>
+                </div>
               )}
-
-              {/* SEGMENTS LIST */}
-              {segments.length > 0 && (
-                  <div className="mt-4 border rounded-lg overflow-hidden bg-white">
-                      <div className="bg-gray-100 px-3 py-2 border-b flex justify-between items-center">
-                          <h4 className="text-xs font-bold text-gray-500 uppercase">Trechos Realizados ({segments.length})</h4>
-                          <span className="text-[10px] text-gray-400">Total calculado automaticamente</span>
-                      </div>
-                      <div className="divide-y divide-gray-100 max-h-48 overflow-y-auto">
-                          {segments.map((seg) => (
-                              <div key={seg.id} className="p-3 flex justify-between items-center hover:bg-gray-50">
-                                  <div>
-                                      <div className="flex items-center gap-2">
-                                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${seg.type === 'CAPINA' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>{seg.type}</span>
-                                          <span className="text-xs font-mono text-gray-500">{new Date(seg.startedAt).toLocaleTimeString()} - {new Date(seg.endedAt).toLocaleTimeString()}</span>
-                                      </div>
-                                      <p className="text-[10px] text-gray-400 mt-0.5 truncate max-w-[200px]">{seg.startLocation.addressFromGPS}</p>
-                                  </div>
-                                  <div className="text-right flex items-center gap-3">
-                                      <div>
-                                          <p className="text-xs font-bold text-gray-700">
-                                              {seg.type === 'CAPINA' ? `${seg.calculatedValue.toFixed(0)}m` : `${seg.calculatedValue.toFixed(0)}m²`}
-                                          </p>
-                                          {seg.type === 'ROCAGEM' && <p className="text-[9px] text-gray-400">{seg.distance.toFixed(0)}m x {seg.width}m</p>}
-                                      </div>
-                                      <button type="button" onClick={() => removeSegment(seg.id)} className="text-red-400 hover:text-red-600 p-1">
-                                          <Trash2 className="w-4 h-4" />
-                                      </button>
-                                  </div>
-                              </div>
-                          ))}
-                      </div>
-                  </div>
-              )}
-
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 relative mt-6">
-            <div className="relative md:col-span-2 z-30">
-              <label className="block text-xs font-medium text-gray-500 uppercase">Rua / Logradouro (Ponto A)</label>
-              <div className="relative">
-                <input required type="text" value={street} readOnly placeholder="Capture o GPS para preencher..." className="mt-1 block w-full rounded-md border-gray-200 shadow-sm border p-3 pl-10 bg-gray-100 text-gray-600 cursor-not-allowed font-bold" />
-                <div className="absolute left-3 top-3.5 text-gray-400"><Lock className="w-5 h-5" /></div>
-              </div>
-              
-              {nearbyStreets.length > 0 && (
-                  <div className="mt-2 animate-in fade-in bg-yellow-50 p-2 rounded border border-yellow-100">
-                    <p className="text-[10px] text-yellow-700 mb-1 flex items-center gap-1 font-bold"><AlertTriangle className="w-3 h-3" /> O GPS errou a rua? Sugestões próximas:</p>
-                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto custom-scrollbar">
-                        {nearbyStreets.map((st, i) => (
-                            <button type="button" key={i} onClick={() => handleCorrectionClick(st)} className="text-[10px] px-2 py-1 rounded border transition-colors shadow-sm bg-white text-gray-600 border-gray-200 hover:bg-yellow-100 hover:text-yellow-800 hover:border-yellow-300">
-                                {st}
+              {pendingSegment && activeSegmentType === 'ROCAGEM' && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 animate-in fade-in scale-100">
+                    <h4 className="font-bold text-emerald-800 text-sm mb-2 flex items-center gap-2"><Ruler className="w-4 h-4" /> Informe a Largura do Corte</h4>
+                    <p className="text-xs text-gray-600 mb-4">Trecho de <strong>{pendingSegment.distance?.toFixed(1)}m</strong>.</p>
+                    <div className="grid grid-cols-2 gap-2 mb-4">
+                        {WIDTH_OPTIONS.map((opt) => (
+                            <button key={opt.value} type="button" onClick={() => setRocagemWidth(opt.value)} className={`py-4 px-3 rounded-xl border text-left transition-all flex flex-col justify-center ${rocagemWidth === opt.value ? 'bg-emerald-600 text-white border-emerald-600 shadow-md scale-105' : 'bg-white text-gray-600 border-gray-300'}`}>
+                                <span className="font-black text-xl">{opt.value}m</span>
+                                <span className={`text-[10px] uppercase font-bold ${rocagemWidth === opt.value ? 'text-emerald-100' : 'text-gray-400'}`}>{opt.label}</span>
                             </button>
                         ))}
                     </div>
-                  </div>
+                    <div className="flex gap-2 items-end pt-3 border-t border-emerald-100">
+                        <div className="flex-1">
+                            <label className="text-[10px] font-bold text-gray-500 uppercase">Customizado (m)</label>
+                            <input type="number" step="0.1" autoFocus value={rocagemWidth} onChange={e => setRocagemWidth(e.target.value)} className="w-full p-3 border border-emerald-300 rounded-lg text-xl font-black" />
+                        </div>
+                        <button type="button" onClick={confirmRocagemSegment} className="bg-emerald-600 text-white px-8 py-4 rounded-lg font-bold shadow-lg active:scale-95">OK</button>
+                    </div>
+                </div>
               )}
-            </div>
-            <div className="md:col-span-1">
-              <label className="block text-xs font-medium text-gray-500 uppercase">Bairro</label>
-              <input required type="text" value={neighborhood} onChange={e => setNeighborhood(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 bg-gray-50" />
-            </div>
-            
-            <div className="md:col-span-1">
-              <label className="block text-xs font-medium text-gray-500 uppercase flex justify-between items-center">
-                  Perímetro / Referência
-                  <button type="button" onClick={handleManualRefreshPerimeter} className="text-[10px] flex items-center gap-1 text-blue-600 hover:text-blue-800 bg-blue-50 px-2 py-0.5 rounded">
-                      <RotateCcw className={`w-3 h-3 ${isLoadingNearby ? 'animate-spin' : ''}`} /> Recarregar
-                  </button>
-              </label>
-              <input type="text" value={perimeter} onChange={e => setPerimeter(e.target.value)} placeholder="Ex: Entre Rua A e Rua B" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2" />
-              
-              {(nearbyStreets.length > 0) && (
-                  <div className="mt-2 animate-in fade-in bg-gray-50 p-2 rounded border border-gray-100">
-                      <p className="text-[10px] text-gray-400 mb-1 flex items-center gap-1 font-bold"><CornerDownRight className="w-3 h-3" /> Ruas próximas:</p>
-                      <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto custom-scrollbar">
-                           {nearbyStreets.map((st, i) => (
-                               <button type="button" key={i} onClick={() => handleAddPerimeterStreet(st)} className={`text-[10px] px-2 py-1 rounded border transition-colors shadow-sm ${selectedPerimeterStreets.includes(st) ? 'bg-ciclus-600 text-white border-ciclus-600 font-bold' : 'bg-white text-gray-600 border-gray-200 hover:bg-white hover:border-ciclus-300'}`}>
-                                 {st}
-                               </button>
-                           ))}
-                      </div>
-                  </div>
+
+              {segments.length > 0 && (
+                <div className="mt-6 border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                    <div className="bg-gray-50 px-4 py-3 border-b flex justify-between items-center text-[10px] font-bold text-gray-500 uppercase">
+                        <span>Resumo dos Trechos ({segments.length})</span>
+                    </div>
+                    <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
+                        {segments.map((seg) => (
+                            <div key={seg.id} className="p-4 bg-white hover:bg-gray-50">
+                                <div className="flex justify-between items-start mb-1">
+                                    <div className="flex items-center gap-2">
+                                        <span className={`text-[9px] font-black px-2 py-0.5 rounded-full uppercase ${seg.type === 'CAPINAÇÃO' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>{seg.type}</span>
+                                        <span className="text-[10px] font-bold text-gray-500">{new Date(seg.startedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+                                    </div>
+                                    <p className="text-sm font-black text-gray-800">{seg.calculatedValue.toFixed(1)}{seg.type === 'CAPINAÇÃO' ? 'm' : 'm²'}</p>
+                                </div>
+                                <p className="text-[11px] font-bold text-gray-700 flex items-center gap-1"><MapPinned className="w-3 h-3 text-red-500" /> {seg.street}</p>
+                                <div className="flex justify-between items-center mt-2">
+                                    <span className="text-[10px] text-gray-400">Distância: {seg.distance.toFixed(1)}m</span>
+                                    <button type="button" onClick={() => removeSegment(seg.id)} className="text-red-400 font-bold text-[10px] uppercase">Remover</button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
               )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
+            <div className="md:col-span-2 relative z-30">
+                <div className="flex justify-between items-center mb-1">
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">Logradouro / Rua Principal</label>
+                    <button type="button" onClick={handleForceUpdateLocation} className="text-ciclus-600 text-[10px] font-bold flex items-center gap-1 hover:underline active:scale-95 transition-all"><RefreshCw className={`w-3 h-3 ${loadingGPS.active ? 'animate-spin' : ''}`} /> REFRESH GPS</button>
+                </div>
+                <div className="relative">
+                    <input required type="text" value={street} onChange={e => setStreet(e.target.value)} className="mt-1 block w-full rounded-xl border-gray-300 border p-4 pl-11 font-black text-gray-800 focus:ring-2 focus:ring-ciclus-500 outline-none shadow-sm" placeholder="Rua do serviço..." />
+                    <div className="absolute left-3.5 top-4.5 text-gray-400"><MapPin className="w-5 h-5" /></div>
+                </div>
+                {nearbyStreets.length > 0 && (
+                    <div className="mt-3 bg-yellow-50 p-3 rounded-xl border border-yellow-100 animate-in fade-in slide-in-from-top-2">
+                        <p className="text-[10px] text-yellow-700 mb-2 font-bold uppercase tracking-tight flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Corrigir Rua:</p>
+                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                            {nearbyStreets.map((st, i) => (
+                                <button type="button" key={i} onClick={() => handleCorrectionStreet(st)} className="text-[10px] px-3 py-2 rounded-lg border shadow-sm bg-white text-gray-700 border-gray-200 hover:bg-yellow-100 active:bg-yellow-200 transition-all font-bold">{st}</button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <div className="relative z-20">
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-wider">Bairro</label>
+                <input required type="text" value={neighborhood} onChange={e => setNeighborhood(e.target.value)} className="block w-full rounded-xl border-gray-300 border p-3.5 bg-gray-50 font-bold text-gray-700 focus:ring-2 focus:ring-ciclus-500 outline-none" />
+                {nearbyNeighborhoods.length > 0 && (
+                    <div className="mt-2">
+                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                            {nearbyNeighborhoods.map((nb, i) => (
+                                <button type="button" key={i} onClick={() => setNeighborhood(nb)} className="text-[10px] px-2.5 py-1.5 rounded-lg border bg-white text-gray-600 border-gray-200 hover:bg-ciclus-50 transition-all font-bold">{nb}</button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <div className="relative z-10">
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-wider">Perímetro / Referência</label>
+                <input type="text" value={perimeter} onChange={e => setPerimeter(e.target.value)} className="block w-full rounded-xl border-gray-300 border p-3.5 font-bold text-gray-700 focus:ring-2 focus:ring-ciclus-500 outline-none shadow-sm" placeholder="Ex: Entre rua X e Y" />
+                {nearbyStreets.length > 0 && (
+                    <div className="mt-2">
+                        <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Sugestões para Perímetro:</p>
+                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                            {nearbyStreets.map((st, i) => (
+                                <button type="button" key={i} onClick={() => handleAddPerimeterStreet(st)} className={`text-[10px] px-2.5 py-1.5 rounded-lg border transition-all shadow-sm font-bold ${selectedPerimeterStreets.includes(st) ? 'bg-ciclus-600 text-white border-ciclus-600' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'}`}>
+                                    {st}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
           </div>
         </section>
 
-        <section className="border-t border-gray-100 pt-6">
-          <h3 className="text-sm font-bold text-gray-400 uppercase mb-3">3. Quantitativos de Produção</h3>
-          {renderMetricInputs()}
-        </section>
-
-        <section className="border-t border-gray-100 pt-6">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2"><Users className="w-4 h-4" /> 4. Frequência da Equipe</h3>
-            <span className="text-xs bg-gray-100 px-2 py-1 rounded">{attendance.filter(a => a.present).length} / {attendance.length} Presentes</span>
-          </div>
-          <div className="bg-white border border-gray-200 rounded-lg divide-y divide-gray-100">
-             {attendance.length === 0 ? <div className="p-4 text-center text-gray-400 text-sm">Nenhum colaborador vinculado a este encarregado no banco de dados.</div> : 
-               attendance.map((record, idx) => (
-                 <div key={record.employeeId} className="flex items-center justify-between p-3 hover:bg-gray-50">
-                    <div><p className="font-medium text-gray-800 text-sm">{record.name} <span className="text-gray-400 font-normal ml-1">(Mat: {record.registration})</span></p><p className="text-[10px] text-gray-400 uppercase">{record.role}</p></div>
-                    <label className="flex items-center cursor-pointer relative"><input type="checkbox" checked={record.present} onChange={() => togglePresence(idx)} className="sr-only peer" /><div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-ciclus-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-ciclus-600"></div></label>
-                 </div>
-               ))
-             }
+        <section className="border-t border-gray-100 pt-6"><h3 className="text-sm font-bold text-gray-400 uppercase mb-3 flex items-center gap-2"><Calculator className="w-4 h-4" /> 3. Totais Acumulados</h3>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner">
+                <div className="relative"><label className="block text-xs font-bold text-gray-700 flex justify-between uppercase">Capinação (m)</label><div className="relative mt-1"><input type="number" value={metrics.capinaM} readOnly className="w-full p-3 border border-gray-300 rounded-lg bg-gray-200 font-mono text-xl font-black text-blue-700" /><Lock className="absolute right-3.5 top-3.5 w-4 h-4 text-gray-300" /></div></div>
+                <div className="relative"><label className="block text-xs font-bold text-gray-700 flex justify-between uppercase">Roçagem (m²)</label><div className="relative mt-1"><input type="number" value={metrics.rocagemM2} readOnly className="w-full p-3 border border-gray-300 rounded-lg bg-gray-200 font-mono text-xl font-black text-emerald-700" /><Lock className="absolute right-3.5 top-3.5 w-4 h-4 text-gray-300" /></div></div>
+                <div><label className="block text-xs font-bold text-gray-500 uppercase">Varrição (m)</label><input type="number" min="0" step="0.1" value={metrics.varricaoM || ''} onChange={e => setMetrics({...metrics, varricaoM: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800" placeholder="0.0" /></div>
+                <div><label className="block text-xs font-bold text-gray-500 uppercase">Pintura de Vias (m)</label><input type="number" min="0" step="0.1" value={metrics.pinturaViasM || ''} onChange={e => setMetrics({...metrics, pinturaViasM: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800" placeholder="0.0" /></div>
+                <div><label className="block text-xs font-bold text-gray-500 uppercase">Pintura de Postes (Unid)</label><input type="number" min="0" step="1" value={metrics.pinturaPostesUnd || ''} onChange={e => setMetrics({...metrics, pinturaPostesUnd: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800" placeholder="0" /></div>
+            </div>
           </div>
         </section>
 
+        <section className="border-t border-gray-100 pt-6"><div className="flex justify-between items-center mb-3"><h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2"><Users className="w-4 h-4" /> 4. Equipe (Frequência)</h3></div><div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100 shadow-sm">{attendance.map((record, idx) => (<div key={record.employeeId} className="flex items-center justify-between p-4 hover:bg-gray-50"><div><p className="font-bold text-gray-800 text-sm">{record.name}</p><p className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">{record.role}</p></div><label className="flex items-center cursor-pointer relative"><input type="checkbox" checked={record.present} onChange={() => { const n = [...attendance]; n[idx].present = !n[idx].present; setAttendance(n); }} className="sr-only peer" /><div className="w-12 h-6.5 bg-gray-200 rounded-full peer peer-checked:bg-ciclus-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5.5 after:w-5.5 after:transition-all peer-checked:after:translate-x-full shadow-inner"></div></label></div>))}</div></section>
+        
+        <section className="border-t border-gray-100 pt-6"><h3 className="text-sm font-bold text-gray-400 uppercase mb-3 flex items-center gap-2"><FileText className="w-4 h-4" /> 5. Observações do Dia</h3><textarea value={observations} onChange={e => setObservations(e.target.value)} placeholder="Quebra de maquinários, falta de EPIs ou imprevistos climáticos..." className="w-full rounded-xl border-gray-300 border p-4 h-28 text-sm font-medium focus:ring-2 focus:ring-ciclus-500 outline-none shadow-sm" /></section>
+        
         <section className="border-t border-gray-100 pt-6">
-          <h3 className="text-sm font-bold text-gray-400 uppercase mb-3 flex items-center gap-2"><FileText className="w-4 h-4" /> 5. Observações</h3>
-          <textarea value={observations} onChange={e => setObservations(e.target.value)} placeholder="Ocorrências do dia..." className="w-full rounded-md border-gray-300 shadow-sm border p-3 h-24 text-sm" />
-        </section>
-
-        <section className="border-t border-gray-100 pt-6">
-            <h3 className="text-sm font-bold text-gray-400 uppercase mb-3 flex items-center gap-2"><ImageIcon className="w-4 h-4" /> 6. Foto do Serviço / Evidência</h3>
-            <div onClick={() => workPhotoInputRef.current?.click()} className={`border-2 border-dashed rounded-lg p-6 flex flex-col items-center justify-center cursor-pointer transition-colors ${workPhoto ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:bg-gray-50'}`}>
-                <input ref={workPhotoInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleWorkPhotoUpload} />
-                {workPhoto ? (
+          <h3 className="text-sm font-bold text-gray-400 uppercase mb-4 flex items-center gap-2"><ImageIcon className="w-4 h-4" /> 6. Evidência Fotográfica (Antes e Depois)</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div onClick={() => photoBeforeInputRef.current?.click()} className={`border-2 border-dashed rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer transition-all ${photoBefore ? 'border-ciclus-500 bg-ciclus-50' : 'border-gray-300 bg-gray-50 hover:bg-gray-100'}`}>
+                <input ref={photoBeforeInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => handlePhotoUpload(e, 'before')} />
+                {photoBefore ? (
                     <div className="relative w-full flex flex-col items-center">
-                        <img src={workPhoto} alt="Evidência do Serviço" className="max-h-64 rounded shadow-md object-contain" />
-                        <p className="text-xs text-blue-700 mt-2 font-medium bg-white px-2 py-1 rounded shadow-sm">Toque para alterar a foto</p>
+                        <span className="absolute top-0 left-0 bg-gray-800 text-white text-[9px] px-2 py-0.5 rounded-br font-bold uppercase z-10">Antes</span>
+                        <img src={photoBefore} alt="Antes" className="max-h-48 rounded-lg shadow-md object-contain" />
+                        <p className="text-[10px] text-ciclus-700 font-black mt-2 uppercase tracking-tight">Alterar Foto Antes</p>
                     </div>
                 ) : (
                     <>
-                        <Camera className="w-10 h-10 text-gray-400 mb-2" /><p className="text-sm text-gray-600 font-medium">Toque para tirar foto do serviço</p><p className="text-[10px] text-gray-400 mt-1">Antes, Depois ou Equipe trabalhando</p>
+                        <div className="bg-white p-3 rounded-full shadow-sm mb-2"><Camera className="w-6 h-6 text-gray-400" /></div>
+                        <p className="text-xs text-gray-700 font-black uppercase">FOTO DE ANTES</p>
                     </>
                 )}
             </div>
-        </section>
 
-        <div className="flex gap-3 pt-4 sticky bottom-0 bg-white p-4 border-t mt-6 -mx-6 -mb-6 z-10">
-          <button type="button" onClick={onCancel} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-medium hover:bg-gray-200">Cancelar</button>
-          <button type="submit" disabled={isSaving} className="flex-1 bg-ciclus-600 text-white py-3 rounded-lg font-bold hover:bg-ciclus-700 shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
-              {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
-              {isSaving ? 'Enviando...' : existingData ? 'Reenviar RD' : 'Enviar RD'}
-          </button>
+            <div onClick={() => photoAfterInputRef.current?.click()} className={`border-2 border-dashed rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer transition-all ${photoAfter ? 'border-ciclus-500 bg-ciclus-50' : 'border-gray-300 bg-gray-50 hover:bg-gray-100'}`}>
+                <input ref={photoAfterInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => handlePhotoUpload(e, 'after')} />
+                {photoAfter ? (
+                    <div className="relative w-full flex flex-col items-center">
+                        <span className="absolute top-0 left-0 bg-ciclus-600 text-white text-[9px] px-2 py-0.5 rounded-br font-bold uppercase z-10">Depois</span>
+                        <img src={photoAfter} alt="Depois" className="max-h-48 rounded-lg shadow-md object-contain" />
+                        <p className="text-[10px] text-ciclus-700 font-black mt-2 uppercase tracking-tight">Alterar Foto Depois</p>
+                    </div>
+                ) : (
+                    <>
+                        <div className="bg-white p-3 rounded-full shadow-sm mb-2"><ImageIcon className="w-6 h-6 text-gray-400" /></div>
+                        <p className="text-xs text-gray-700 font-black uppercase">FOTO DE DEPOIS</p>
+                    </>
+                )}
+            </div>
+          </div>
+        </section>
+        
+        <div className="flex gap-4 pt-6 sticky bottom-0 bg-white p-5 border-t mt-8 -mx-6 -mb-6 z-50 shadow-[0_-10px_25px_rgba(0,0,0,0.1)] rounded-t-2xl">
+            <button type="button" onClick={onCancel} className="flex-1 bg-gray-100 text-gray-600 py-4.5 rounded-xl font-black hover:bg-gray-200 transition-all uppercase text-xs tracking-widest active:scale-95">Cancelar</button>
+            <button type="submit" disabled={isSaving} className="flex-[2] bg-ciclus-600 text-white py-4.5 rounded-xl font-black shadow-xl flex justify-center items-center gap-3 disabled:opacity-50 hover:bg-ciclus-700 active:scale-95 transition-all uppercase text-xs tracking-widest">
+                {isSaving ? <Loader2 className="w-6 h-6 animate-spin" /> : <Save className="w-6 h-6" />} 
+                {isSaving ? 'Gravando...' : 'Finalizar RD'}
+            </button>
         </div>
       </form>
     </div>

@@ -2,7 +2,7 @@
 import React, { useState, useMemo } from 'react';
 import { RDData, RDStatus, UserRole, User } from '../types';
 import { generateDailyReportSummary } from '../services/geminiService';
-import { FileSpreadsheet, Sparkles, MapPin, XCircle, CheckCircle2, Filter, AlertTriangle, Eye, Calendar, FileText, Clock, Map, Calculator, Search, Trash2, Image as ImageIcon, MapPinned, User as UserIcon, Pencil, Route } from 'lucide-react';
+import { FileSpreadsheet, Sparkles, MapPin, XCircle, CheckCircle2, Filter, AlertTriangle, Eye, Calendar, FileText, Clock, Map, Calculator, Search, Trash2, Image as ImageIcon, MapPinned, User as UserIcon, Pencil, Route, Camera } from 'lucide-react';
 
 interface DashboardProps {
   rds: RDData[];
@@ -34,32 +34,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
   // --- Filtering Logic ---
   const filteredRDs = useMemo(() => {
     return rds.filter(rd => {
-      // 1. Permission / Visibility Filter
       if (currentUser.role !== UserRole.CCO) {
         const isMyCreation = rd.foremanId === currentUser.id;
         const isAssignedToMe = rd.supervisorId === currentUser.id;
-
         if (currentUser.role === UserRole.SUPERVISOR) {
-            // Supervisor sees: Their own RDs OR RDs assigned to them by Foremen
             if (!isMyCreation && !isAssignedToMe) return false;
         } else if (currentUser.role === UserRole.ENCARREGADO) {
-            // Encarregado sees: Only their own RDs
             if (!isMyCreation) return false;
         }
       }
-
-      // 2. Status Filter
       if (filterStatus !== 'ALL' && rd.status !== filterStatus) return false;
-
-      // 3. Date Filter
       const rdDate = rd.date.split('T')[0];
       if (dateFilterType === 'month') {
         if (!rdDate.startsWith(selectedMonth)) return false;
       } else if (dateFilterType === 'day') {
         if (selectedDate && rdDate !== selectedDate) return false;
       }
-
-      // 4. Search Filter
       if (searchTerm) {
         const lowerTerm = searchTerm.toLowerCase();
         const matches = 
@@ -69,12 +59,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
           (rd.neighborhood || '').toLowerCase().includes(lowerTerm);
         if (!matches) return false;
       }
-
       return true;
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [rds, filterStatus, dateFilterType, selectedMonth, selectedDate, searchTerm, currentUser]);
 
-  // --- Totals Calculation ---
   const periodTotals = useMemo(() => {
     return filteredRDs.reduce((acc, rd) => ({
       capina: acc.capina + (rd.metrics.capinaM || 0),
@@ -86,7 +74,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
     }), { capina: 0, varricao: 0, rocagem: 0, pintura: 0, postes: 0, rdsCount: 0 });
   }, [filteredRDs]);
 
-  // --- Handlers ---
   const handleRejectClick = (e: React.MouseEvent, rdId: string) => {
     e.stopPropagation();
     setRejectingId(rdId);
@@ -156,7 +143,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
       alert("Nenhum dado para exportar com os filtros atuais.");
       return;
     }
-
     const headers = [
       "ID", "Data", "Hora", "Encarregado", "Mat. Encarregado", "Base", "Turno", "Status", "Categoria", 
       "Rua", "Bairro", "Perímetro / Referência",
@@ -165,52 +151,39 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
       "Homens (Qtd)", "Capina/H", "Varrição/H", "Pintura/H", "Roçagem/H", "Postes/H",
       "Total Linear (m)", "Meta Linear (m)", "Saldo Linear", "Total Roçagem (m2)", "Meta Roçagem (m2)", "Saldo Roçagem", "Observações", "Lat", "Lng"
     ];
-
     let sumCapina = 0; let sumVarricao = 0; let sumPintura = 0; let sumRocagem = 0; let sumPostes = 0;
     let sumHomens = 0; 
     let sumTotalLinear = 0; let sumSaldoLinear = 0;
     let sumTotalRocagem = 0; let sumSaldoRocagem = 0;
-
     const dataRows = filteredRDs.map(rd => {
         const dateObj = new Date(rd.date);
         const dateStr = dateObj.toLocaleDateString('pt-BR');
         const timeStr = dateObj.toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'});
-        
         const presentCount = rd.teamAttendance.filter(a => a.present).length;
-        
         const mCapina = rd.metrics.capinaM || 0;
         const mVarricao = rd.metrics.varricaoM || 0;
         const mPintura = rd.metrics.pinturaViasM || 0;
         const mRocagem = rd.metrics.rocagemM2 || 0;
         const mPostes = rd.metrics.pinturaPostesUnd || 0;
-
         sumCapina += mCapina; sumVarricao += mVarricao; sumPintura += mPintura;
         sumRocagem += mRocagem; sumPostes += mPostes; sumHomens += presentCount;
-
         const capinaPerMan = presentCount > 0 ? (mCapina / presentCount).toFixed(2) : "0";
         const varricaoPerMan = presentCount > 0 ? (mVarricao / presentCount).toFixed(2) : "0";
         const pinturaPerMan = presentCount > 0 ? (mPintura / presentCount).toFixed(2) : "0";
         const rocagemPerMan = presentCount > 0 ? (mRocagem / presentCount).toFixed(2) : "0";
         const postesPerMan = presentCount > 0 ? (mPostes / presentCount).toFixed(2) : "0";
-
-        // Logic split: Linear vs Area
         const totalLinear = mCapina + mVarricao + mPintura;
         const balanceLinear = totalLinear - 1950;
-        
         const totalRocagemLocal = mRocagem;
         const balanceRocagem = totalRocagemLocal - 1000;
-
         sumTotalLinear += totalLinear;
         sumSaldoLinear += balanceLinear;
         sumTotalRocagem += totalRocagemLocal;
         sumSaldoRocagem += balanceRocagem;
-
-        // Tracking Data
         let trackStart = '-';
         let trackEnd = '-';
         let duration = '';
         let distance = '0';
-
         if (rd.segments && rd.segments.length > 0) {
             trackStart = new Date(rd.segments[0].startedAt).toLocaleTimeString('pt-BR');
             trackEnd = new Date(rd.segments[rd.segments.length - 1].endedAt).toLocaleTimeString('pt-BR');
@@ -222,7 +195,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
             duration = formatSecondsToTime(rd.gpsTrack.durationSeconds);
             distance = rd.gpsTrack.totalDistanceMeters.toFixed(1);
         }
-
         return [
           rd.id, dateStr, timeStr, rd.foremanName, rd.foremanRegistration || '', rd.base || '', rd.shift || '', rd.status, rd.serviceCategory,
           rd.street, rd.neighborhood, (rd.perimeter || '').replace(/;/g, ',').replace(/\n/g, ' '),
@@ -233,15 +205,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
           rd.location?.lat || '', rd.location?.lng || ''
         ].join(";");
     });
-
     const footerRow = [
       "TOTAIS DO PERÍODO", "", "", "", "", "", "", "", "", "", "", "", 
-      "", "", "", "", // Empty tracking cols
+      "", "", "", "", 
       sumCapina.toFixed(2).replace('.', ','), sumVarricao.toFixed(2).replace('.', ','), sumPintura.toFixed(2).replace('.', ','), sumRocagem.toFixed(2).replace('.', ','), sumPostes.toFixed(0).replace('.', ','),
       sumHomens.toString(), "-", "-", "-", "-", "-",
       sumTotalLinear.toFixed(2).replace('.', ','), "-", sumSaldoLinear.toFixed(2).replace('.', ','), sumTotalRocagem.toFixed(2).replace('.', ','), "-", sumSaldoRocagem.toFixed(2).replace('.', ','), "", "", ""
     ].join(";");
-
     const csvContent = [headers.join(";"), ...dataRows, footerRow].join("\n");
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -293,7 +263,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
                 </button>
                 ))}
             </div>
-            
             <div className="flex gap-2 w-full md:w-auto">
                 {currentUser.role === UserRole.CCO && (
                     <button onClick={handleGenerateAIReport} disabled={isGeneratingReport} className="flex-1 md:flex-none items-center justify-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-md hover:bg-purple-700 transition-colors text-sm font-medium flex">
@@ -381,7 +350,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
                            {rd.shift && <div className="flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-1 rounded"><Clock className="w-3 h-3 text-gray-400" /> Turno: <strong>{rd.shift}</strong></div>}
                         </div>
                         
-                        {/* New Segment-based Tracking Visualization */}
                         {(rd.segments && rd.segments.length > 0) ? (
                             <div className="bg-blue-50 rounded p-3 border border-blue-100">
                                 <p className="text-[10px] font-bold text-blue-800 uppercase mb-2 flex items-center gap-1"><Route className="w-3 h-3" /> Trechos de GPS ({rd.segments.length})</p>
@@ -409,7 +377,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
                                 </div>
                             </div>
                         ) : rd.gpsTrack ? (
-                            // Legacy Tracking View
                             <div className="bg-gray-50 rounded p-2 border border-gray-200 opacity-75">
                                 <p className="text-[10px] font-bold text-gray-500 uppercase mb-1 flex items-center gap-1"><MapPinned className="w-3 h-3" /> Dados GPS (Antigo)</p>
                                 <div className="grid grid-cols-2 gap-2 text-xs">
@@ -454,7 +421,30 @@ export const Dashboard: React.FC<DashboardProps> = ({ rds, currentUser, onUpdate
                       </div>
 
                       <div className="space-y-4">
-                        {rd.workPhotoUrl && <div><p className="text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><ImageIcon className="w-3 h-3" /> Foto do Serviço</p><img src={rd.workPhotoUrl} alt="Foto do Serviço" className="w-full h-auto max-h-48 object-contain border rounded bg-gray-100" /></div>}
+                        {(rd.photoBeforeUrl || rd.photoAfterUrl) ? (
+                            <div className="space-y-4">
+                                <p className="text-xs font-bold text-gray-400 uppercase flex items-center gap-1"><Camera className="w-3 h-3" /> Evidências do Serviço</p>
+                                <div className="grid grid-cols-1 gap-4">
+                                    {rd.photoBeforeUrl && (
+                                        <div className="relative border rounded-lg overflow-hidden bg-gray-50">
+                                            <span className="absolute top-0 left-0 bg-gray-800 text-white text-[9px] px-2 py-0.5 font-bold uppercase z-10">Antes do Serviço</span>
+                                            <img src={rd.photoBeforeUrl} alt="Antes" className="w-full h-auto max-h-64 object-contain" />
+                                        </div>
+                                    )}
+                                    {rd.photoAfterUrl && (
+                                        <div className="relative border rounded-lg overflow-hidden bg-gray-50">
+                                            <span className="absolute top-0 left-0 bg-ciclus-600 text-white text-[9px] px-2 py-0.5 font-bold uppercase z-10">Depois do Serviço</span>
+                                            <img src={rd.photoAfterUrl} alt="Depois" className="w-full h-auto max-h-64 object-contain" />
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ) : rd.workPhotoUrl ? (
+                            <div>
+                                <p className="text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><ImageIcon className="w-3 h-3" /> Foto do Serviço (Legado)</p>
+                                <img src={rd.workPhotoUrl} alt="Foto do Serviço" className="w-full h-auto max-h-48 object-contain border rounded bg-gray-100" />
+                            </div>
+                        ) : null}
                       </div>
                    </div>
 

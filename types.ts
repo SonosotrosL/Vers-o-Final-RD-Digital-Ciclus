@@ -16,7 +16,6 @@ export enum Shift {
   NOTURNO = 'Noturno'
 }
 
-// Definition of Teams and their cycle duration (Roteiro em dias)
 export interface TeamConfig {
   name: string;
   days: number;
@@ -44,11 +43,11 @@ export const TEAMS: TeamConfig[] = [
 ];
 
 export interface ProductionMetrics {
-  capinaM: number;        // Metros lineares (Auto sum of segments)
-  pinturaViasM: number;   // Metros lineares (Manual)
-  pinturaPostesUnd: number; // Unidades (Manual)
-  rocagemM2: number;      // Metros quadrados (Auto sum of segments * width)
-  varricaoM: number;      // Metros lineares (Manual)
+  capinaM: number;        
+  pinturaViasM: number;   
+  pinturaPostesUnd: number; 
+  rocagemM2: number;      
+  varricaoM: number;      
 }
 
 export enum RDStatus {
@@ -71,21 +70,21 @@ export interface GeoLocation {
   addressFromGPS?: string; 
 }
 
-// New Interface for a Single Segment Track
 export interface TrackSegment {
   id: string;
-  type: 'CAPINA' | 'ROCAGEM';
+  type: 'CAPINAÇÃO' | 'ROCAGEM';
   startedAt: string;
   endedAt: string;
   startLocation: GeoLocation;
   endLocation: GeoLocation;
-  distance: number; // meters
-  width?: number; // Only for Roçagem (meters)
-  calculatedValue: number; // m for Capina, m2 for Roçagem
+  street: string; // Endereço capturado no fim do trecho
+  neighborhood: string; // Bairro capturado no fim do trecho
+  distance: number; 
+  width?: number; 
+  calculatedValue: number; 
   pathPoints: {lat: number, lng: number}[];
 }
 
-// Keep GeoPath for legacy compatibility if needed, but primary logic moves to segments
 export interface GeoPath {
   startedAt: string; 
   endedAt?: string; 
@@ -99,9 +98,9 @@ export interface GeoPath {
 export interface Employee {
   id: string;
   name: string;
-  registration: string; // Matrícula
-  role: string; // Cargo (Gari, Ajudante, etc) - Now a string to allow custom roles
-  supervisorId?: string; // Link to supervisor/foreman for auto-population
+  registration: string; 
+  role: string; 
+  supervisorId?: string; 
 }
 
 export interface AttendanceRecord {
@@ -114,42 +113,29 @@ export interface AttendanceRecord {
 
 export interface RDData {
   id: string;
-  date: string; // ISO date string
+  date: string; 
   foremanId: string;
   foremanName: string;
-  foremanRegistration?: string; // Store snapshot of registration
-  supervisorId?: string; // ID of the supervisor responsible
+  foremanRegistration?: string; 
+  supervisorId?: string; 
   status: RDStatus;
-  
-  // Work Details
   base?: Base;
   shift?: Shift;
-  team?: string; // Optional legacy field
+  team?: string; 
   serviceCategory: ServiceCategory;
   street: string;
   neighborhood: string;
   perimeter: string;
-  
-  // New Metrics Structure
   metrics: ProductionMetrics;
-  
-  // Location & Tracking
-  location?: GeoLocation; // Point A (Start) of the FIRST segment (Legacy compat)
-  
-  // New: Multiple Segments support
+  location?: GeoLocation; 
   segments: TrackSegment[];
-  
-  gpsTrack?: GeoPath; // Deprecated, kept for backward compatibility with old records
-  
-  // Resources
+  gpsTrack?: GeoPath; 
   teamAttendance: AttendanceRecord[];
-  
-  // Proofs
-  workPhotoUrl?: string; // New field: Foto do serviço
-  signatureImageUrl?: string; // Base64 image
-  observations?: string; // New field for notes/occurrences
-  
-  // Meta
+  workPhotoUrl?: string; // Mantido por compatibilidade
+  photoBeforeUrl?: string; // Novo: Foto de Antes
+  photoAfterUrl?: string; // Novo: Foto de Depois
+  signatureImageUrl?: string; 
+  observations?: string; 
   createdAt: number;
   supervisorNote?: string;
 }
@@ -157,8 +143,8 @@ export interface RDData {
 export interface User {
   id: string;
   name: string;
-  registration: string; // Used for Login
-  password?: string; // Simple password for demo
+  registration: string; 
+  password?: string; 
   role: UserRole;
-  team?: string; // Linked team (S10, S01, etc.) for performance tracking
+  team?: string; 
 }

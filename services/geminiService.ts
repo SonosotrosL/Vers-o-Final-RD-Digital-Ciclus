@@ -2,25 +2,13 @@
 import { GoogleGenAI } from "@google/genai";
 import { RDData } from "../types";
 
-// Pegar API Key de forma segura
-const getApiKey = () => {
-  try {
-    return process.env.API_KEY || '';
-  } catch {
-    return '';
-  }
-};
-
-// Lazy initialization ou verificação de chave
-const apiKey = getApiKey();
-const ai = new GoogleGenAI({ apiKey: apiKey || 'dummy-key' });
+// Fix: Initialize the Google GenAI client exclusively from process.env.API_KEY as per guidelines
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
  * Generates a summary report for the CCO based on selected RDs (Operational View).
  */
 export const generateDailyReportSummary = async (rds: RDData[]): Promise<string> => {
-  if (!getApiKey()) return "⚠️ IA desativada: Configure a API_KEY para usar esta função.";
-  
   try {
     if (rds.length === 0) return "Nenhum RD selecionado para análise.";
 
@@ -39,6 +27,7 @@ export const generateDailyReportSummary = async (rds: RDData[]): Promise<string>
       Gere um relatório executivo em Markdown contendo Totais Gerais, Produtividade e Insights.
     `;
 
+    // Fix: Updated model usage and result extraction to use the .text property
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
@@ -59,8 +48,6 @@ export const generateStrategicAnalysis = async (
   efficiencyData: any,
   metaAnalysis: any
 ): Promise<string> => {
-  if (!getApiKey()) return "Análise automática pausada (API Key ausente).";
-
   try {
     const prompt = `
       Você é um Consultor de BI da Ciclus.
@@ -70,6 +57,7 @@ export const generateStrategicAnalysis = async (
       Gere uma análise estratégica em Markdown sobre performance, gargalos e ações necessárias.
     `;
 
+    // Fix: Updated model usage and result extraction to use the .text property
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
