@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ServiceCategory, RDData, RDStatus, AttendanceRecord, GeoLocation, User, ProductionMetrics, Employee, Base, Shift, UserRole, TrackSegment } from '../types';
 import { getEmployees, getUsers } from '../services/storageService';
-import { MapPin, Users, Save, RefreshCw, AlertTriangle, FileText, Clock, Map, Lock, Play, Square, Ruler, Image as ImageIcon, Trash2, Calculator, Loader2, Calendar, UserCheck, Navigation2, Footprints, ChevronRight, Camera, Crosshair, MapPinned } from 'lucide-react';
+import { MapPin, Users, Save, RefreshCw, AlertTriangle, FileText, Clock, Map, Lock, Play, Square, Ruler, Image as ImageIcon, Trash2, Calculator, Loader2, Calendar, UserCheck, Navigation2, Footprints, ChevronRight, Camera, Crosshair, MapPinned, Unlock, Pencil, Signal, SignalHigh, SignalLow } from 'lucide-react';
 
 interface RDFormProps {
   currentUser: User;
@@ -11,7 +11,10 @@ interface RDFormProps {
   existingData?: RDData; 
 }
 
-const STEP_LENGTH_METERS = 0.75; 
+// Configurações de precisão e filtro
+const GPS_MIN_DISPLACEMENT = 3.5; 
+const GPS_MAX_ACCURACY_THRESHOLD = 45; // Despreza pontos com erro maior que 45m
+
 const WIDTH_OPTIONS = [
     { value: '1', label: 'Beira de Calçada' },
     { value: '1.5', label: 'Canteiro Central' },
@@ -47,15 +50,13 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
   const [currentStartLocation, setCurrentStartLocation] = useState<GeoLocation | undefined>(undefined);
   const [currentTrackPoints, setCurrentTrackPoints] = useState<{lat: number, lng: number}[]>([]);
   
-  const [currentSteps, setCurrentSteps] = useState(0);
   const [currentDistance, setCurrentDistance] = useState(0);
-  const [isMoving, setIsMoving] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [pendingSegment, setPendingSegment] = useState<Partial<TrackSegment> | null>(null);
   const [rocagemWidth, setRocagemWidth] = useState<string>('');
   
   // --- Estados de GPS e UI ---
-  const [loadingGPS, setLoadingGPS] = useState<{ active: boolean, message: string }>({ active: false, message: '' });
+  const [loadingGPS, setLoadingGPS] = useState<{ active: boolean; message: string }>({ active: false, message: '' });
   const [gpsAccuracy, setGpsAccuracy] = useState<number | undefined>(undefined);
   const [isSaving, setIsSaving] = useState(false);
   
@@ -66,9 +67,11 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
 
   const watchIdRef = useRef<number | null>(null);
   const timerIntervalRef = useRef<any>(null);
-  const lastStepTimeRef = useRef<number>(0);
+  const lastLocationRef = useRef<{lat: number, lng: number} | null>(null);
 
   const [attendance, setAttendance] = useState<AttendanceRecord[]>(existingData?.teamAttendance || []);
+
+  const isSupervisorOrAdmin = currentUser.role === UserRole.SUPERVISOR || currentUser.role === UserRole.CCO;
 
   // --- Lógica de Inicialização ---
   useEffect(() => {
@@ -89,36 +92,43 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
         }
     };
     loadInitialData();
+    
+    return () => {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    };
   }, [currentUser, existingData, selectedSupervisorId]);
 
   useEffect(() => {
-    const totalCapina = segments.filter(s => s.type === 'CAPINAÇÃO').reduce((sum, s) => sum + s.calculatedValue, 0);
-    const totalRocagem = segments.filter(s => s.type === 'ROCAGEM').reduce((sum, s) => sum + s.calculatedValue, 0);
-    setMetrics(prev => ({ ...prev, capinaM: parseFloat(totalCapina.toFixed(1)), rocagemM2: parseFloat(totalRocagem.toFixed(1)) }));
+    if (segments.length > 0) {
+        const totalCapina = segments.filter(s => s.type === 'CAPINAÇÃO').reduce((sum, s) => sum + s.calculatedValue, 0);
+        const totalRocagem = segments.filter(s => s.type === 'ROCAGEM').reduce((sum, s) => sum + s.calculatedValue, 0);
+        setMetrics(prev => ({ 
+            ...prev, 
+            capinaM: parseFloat(totalCapina.toFixed(1)), 
+            rocagemM2: parseFloat(totalRocagem.toFixed(1)) 
+        }));
+    }
   }, [segments]);
 
-  // --- Funções de GPS e Geolocalização ---
+  // --- Funções de GPS Melhoradas ---
 
-  const getUltraResilientPosition = (): Promise<GeolocationPosition> => {
+  const getUltraResilientPosition = (attempt = 1): Promise<GeolocationPosition> => {
     return new Promise((resolve, reject) => {
-      const options = { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 };
+      // Configurações progressivas conforme a tentativa
+      const options: PositionOptions = {
+          enableHighAccuracy: attempt <= 2, // Tenta alta precisão nas 2 primeiras vezes
+          timeout: 10000 + (attempt * 5000), // Aumenta o tempo de espera a cada erro
+          maximumAge: attempt === 1 ? 0 : 3000 // Aceita cache apenas se já falhou uma vez
+      };
       
-      // Tentativa 1: Alta Precisão
-      navigator.geolocation.getCurrentPosition(resolve, (err1) => {
-        console.warn("GPS Tentativa 1 (Alta Precisão) falhou", err1);
-        
-        // Tentativa 2: Precisão Padrão com mais tempo
-        navigator.geolocation.getCurrentPosition(resolve, (err2) => {
-           console.warn("GPS Tentativa 2 (Padrão) falhou", err2);
-           
-           // Tentativa 3: Baixa Precisão / Cache permitido
-           navigator.geolocation.getCurrentPosition(resolve, (err3) => {
-             console.error("Todas as tentativas de GPS falharam", err3);
-             reject(err3);
-           }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 });
-           
-        }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 });
-        
+      navigator.geolocation.getCurrentPosition(resolve, (err) => {
+        if (attempt < 3) {
+          console.warn(`Tentativa GPS ${attempt} falhou: ${err.message}. Retentando...`);
+          getUltraResilientPosition(attempt + 1).then(resolve).catch(reject);
+        } else {
+          reject(err);
+        }
       }, options);
     });
   };
@@ -136,8 +146,8 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
 
   const fetchNearbyData = async (lat: number, lng: number) => {
     try {
-        // Correção da query Overpass para evitar erros de sintaxe
-        const query = `[out:json][timeout:15];(way["highway"]["name"](around:500,${lat},${lng});way["boundary"="administrative"]["admin_level"="10"](around:500,${lat},${lng}););out tags;`;
+        // Query do Overpass otimizada para pegar nomes de ruas e bairros
+        const query = `[out:json][timeout:15];(way["highway"]["name"](around:250,${lat},${lng});relation["boundary"="administrative"]["admin_level"="10"](around:250,${lat},${lng}););out tags;`;
         const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
         const response = await fetch(url);
         if (response.ok) {
@@ -147,13 +157,13 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
             data.elements.forEach((el: any) => { 
                 if (el.tags && el.tags.name) {
                     if (el.tags.highway) streetNames.add(el.tags.name);
-                    else hoodNames.add(el.tags.name);
+                    else if (el.tags.boundary === 'administrative') hoodNames.add(el.tags.name);
                 }
             });
             setNearbyStreets(Array.from(streetNames).sort());
             if (hoodNames.size > 0) setNearbyNeighborhoods(Array.from(hoodNames).sort());
         }
-    } catch (e) { console.warn("Overpass failed", e); }
+    } catch (e) { console.warn("Erro ao buscar ruas próximas (Overpass):", e); }
   };
 
   const fetchAddressReverse = async (lat: number, lng: number): Promise<{street: string, hood: string} | null> => {
@@ -168,16 +178,12 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                 return { street: foundStreet, hood: foundHood };
             }
         }
-    } catch (e) { console.warn("Nominatim failed", e); }
+    } catch (e) { console.warn("Erro no geocoding reverso (Nominatim):", e); }
     return null;
   };
 
   const handleStartSegment = async (type: 'CAPINAÇÃO' | 'ROCAGEM') => {
-      if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
-          try { await (DeviceMotionEvent as any).requestPermission(); } catch(e){}
-      }
-      
-      setLoadingGPS({ active: true, message: 'Capturando Local de Início...' });
+      setLoadingGPS({ active: true, message: 'Obtendo sinal estável do GPS...' });
       setActiveSegmentType(type);
       
       try {
@@ -185,7 +191,7 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
         const { latitude: lat, longitude: lng, accuracy } = pos.coords;
         setGpsAccuracy(accuracy);
         
-        // Dispara buscas paralelas (não bloqueia o início do trecho)
+        // Dispara buscas de endereço imediatamente
         fetchNearbyData(lat, lng);
         fetchAddressReverse(lat, lng).then(addr => {
           if (addr) {
@@ -195,41 +201,60 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
         });
 
         setCurrentStartLocation({ lat, lng, accuracy, timestamp: pos.timestamp, addressFromGPS: "Início" });
+        lastLocationRef.current = { lat, lng };
         setTrackStartTime(Date.now());
         setIsTracking(true);
         setCurrentTrackPoints([{lat, lng}]);
-        setCurrentSteps(0);
         setCurrentDistance(0);
         setElapsedTime(0);
         
         if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
         timerIntervalRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
-        window.addEventListener('devicemotion', handleMotion);
         
         if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+        
         watchIdRef.current = navigator.geolocation.watchPosition((p) => {
-            setGpsAccuracy(p.coords.accuracy);
-            const nLat = p.coords.latitude; const nLng = p.coords.longitude;
-            setCurrentTrackPoints(prev => {
-                const last = prev[prev.length - 1];
-                const d = calculateDistanceGPS(last.lat, last.lng, nLat, nLng);
-                // Registra pontos se houver deslocamento significativo
-                if (d > 10 || (d > 3 && isMoving)) return [...prev, {lat: nLat, lng: nLng}];
-                return prev;
-            });
-        }, null, { enableHighAccuracy: true });
+            const acc = p.coords.accuracy;
+            setGpsAccuracy(acc);
+            
+            // FILTRO DE QUALIDADE: Só aceita o ponto se a precisão for aceitável
+            if (acc > GPS_MAX_ACCURACY_THRESHOLD) {
+                console.warn(`Ponto ignorado: Baixa precisão (${acc.toFixed(1)}m)`);
+                return;
+            }
+
+            const nLat = p.coords.latitude; 
+            const nLng = p.coords.longitude;
+            
+            if (lastLocationRef.current) {
+                const d = calculateDistanceGPS(lastLocationRef.current.lat, lastLocationRef.current.lng, nLat, nLng);
+                // FILTRO DE MOVIMENTO: Só acumula se o deslocamento for real (evita o "balanço" do sinal parado)
+                if (d >= GPS_MIN_DISPLACEMENT) {
+                    setCurrentDistance(prev => prev + d);
+                    setCurrentTrackPoints(prevPoints => [...prevPoints, {lat: nLat, lng: nLng}]);
+                    lastLocationRef.current = { lat: nLat, lng: nLng };
+                    // Atualiza ruas sugeridas conforme se move
+                    if (Math.random() > 0.8) fetchNearbyData(nLat, nLng);
+                }
+            }
+        }, (err) => {
+            if (err.code === err.TIMEOUT) {
+              console.warn("GPS Watch: Aguardando sinal...");
+            } else {
+              console.error("Erro crítico no GPS Watch:", err.message);
+            }
+        }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }); 
 
         setLoadingGPS({ active: false, message: '' });
-      } catch (err) {
+      } catch (err: any) {
         setLoadingGPS({ active: false, message: '' });
         setActiveSegmentType(null);
-        alert("Falha ao obter GPS. Certifique-se de que as permissões foram concedidas e que você está em um local aberto.");
+        alert(`Não foi possível iniciar o rastreio: ${err.message || 'Sinal de GPS ausente'}. Certifique-se de que o local é aberto e o GPS está ativado.`);
       }
   };
 
   const handleStopSegment = async () => {
-      setLoadingGPS({ active: true, message: 'Capturando Local de Término...' });
-      window.removeEventListener('devicemotion', handleMotion);
+      setLoadingGPS({ active: true, message: 'Capturando posição final...' });
       if (watchIdRef.current !== null) { navigator.geolocation.clearWatch(watchIdRef.current); watchIdRef.current = null; }
       if (timerIntervalRef.current) { clearInterval(timerIntervalRef.current); timerIntervalRef.current = null; }
       
@@ -267,23 +292,23 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                 setNeighborhood(addrAtEnd.hood);
             }
         }
-      } catch (err) {
+        lastLocationRef.current = null;
+      } catch (err: any) {
         setLoadingGPS({ active: false, message: '' });
         setIsTracking(false);
         setActiveSegmentType(null);
-        alert("Falha ao capturar ponto final do GPS. O trecho foi encerrado, mas pode haver imprecisão no local de término.");
+        alert("Sinal de GPS perdido no encerramento. O trecho será gravado com os últimos pontos válidos.");
       }
   };
 
   const handleForceUpdateLocation = async () => {
-    setLoadingGPS({ active: true, message: 'Atualizando Localização...' });
+    setLoadingGPS({ active: true, message: 'Buscando sugestões de endereço...' });
     try {
       const pos = await getUltraResilientPosition();
       const { latitude: lat, longitude: lng, accuracy } = pos.coords;
       setGpsAccuracy(accuracy);
       
-      // Busca dados de rua e bairro baseados na posição atual
-      fetchNearbyData(lat, lng);
+      await fetchNearbyData(lat, lng);
       const addr = await fetchAddressReverse(lat, lng);
       
       if (addr) {
@@ -293,27 +318,9 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
       setLoadingGPS({ active: false, message: '' });
     } catch (err: any) {
       setLoadingGPS({ active: false, message: '' });
-      const errorMsg = err?.message || JSON.stringify(err);
-      console.error("Manual GPS update failed:", errorMsg);
-      alert("Não foi possível obter a localização. Verifique o sinal do GPS e as permissões do navegador.");
+      alert("Não foi possível obter endereços próximos. Verifique se o GPS está ativado.");
     }
   };
-
-  const handleMotion = (event: DeviceMotionEvent) => {
-    const accel = event.accelerationIncludingGravity;
-    if (!accel || accel.x === null || accel.y === null || accel.z === null) return;
-    const magnitude = Math.sqrt(accel.x ** 2 + accel.y ** 2 + accel.z ** 2);
-    const now = Date.now();
-    // Sensibilidade do acelerômetro para passos reais (previne distância fantasma)
-    if (magnitude > 13.0 && (now - lastStepTimeRef.current) > 400) {
-        setCurrentSteps(prev => prev + 1);
-        lastStepTimeRef.current = now;
-        setIsMoving(true);
-        setTimeout(() => { if (Date.now() - lastStepTimeRef.current > 2000) setIsMoving(false); }, 2500);
-    }
-  };
-
-  useEffect(() => { setCurrentDistance(currentSteps * STEP_LENGTH_METERS); }, [currentSteps]);
 
   const handleCorrectionStreet = async (st: string) => {
       setStreet(st);
@@ -391,14 +398,22 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                     <Navigation2 className="w-8 h-8 text-white absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-bounce" />
                   </div>
                   <p className="font-black uppercase tracking-widest text-lg">{loadingGPS.message}</p>
-                  <p className="text-xs opacity-60">Isso pode levar alguns segundos dependendo da visibilidade do céu e do sinal da rede.</p>
+                  <p className="text-xs opacity-60">Aguardando coordenadas de satélite de alta precisão...</p>
               </div>
           </div>
       )}
 
       <div className="bg-ciclus-700 p-4 text-white flex justify-between items-center sticky top-0 z-40 shadow-md">
         <h2 className="text-lg font-bold">{existingData ? 'Corrigir RD' : 'Novo Relatório Diário'}</h2>
-        <span className="text-xs bg-ciclus-800 px-2 py-1 rounded font-mono">{currentUser.name}</span>
+        <div className="flex items-center gap-2">
+           {gpsAccuracy && (
+               <div className={`px-2 py-0.5 rounded-full flex items-center gap-1 text-[10px] font-bold ${gpsAccuracy < 20 ? 'bg-green-500/20 text-green-300' : gpsAccuracy < 40 ? 'bg-yellow-500/20 text-yellow-300' : 'bg-red-500/20 text-red-300'}`}>
+                   {gpsAccuracy < 20 ? <SignalHigh className="w-3 h-3" /> : gpsAccuracy < 40 ? <Signal className="w-3 h-3" /> : <SignalLow className="w-3 h-3" />}
+                   {gpsAccuracy.toFixed(0)}m
+               </div>
+           )}
+           <span className="text-xs bg-ciclus-800 px-2 py-1 rounded font-mono">{currentUser.registration}</span>
+        </div>
       </div>
       
       <form onSubmit={handleSubmit} className="p-6 space-y-8">
@@ -421,8 +436,7 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
         
         <section className="border-t border-gray-100 pt-6">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2"><MapPin className="w-4 h-4" /> 2. Controle de Trechos</h3>
-            {gpsAccuracy && <div className="text-[10px] font-bold uppercase flex items-center gap-1">GPS: <span className={gpsAccuracy < 30 ? 'text-green-600' : 'text-red-600'}>{gpsAccuracy.toFixed(0)}m</span></div>}
+            <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2"><MapPin className="w-4 h-4" /> 2. Controle de Trechos (GPS)</h3>
           </div>
           
           <div className="space-y-4">
@@ -443,19 +457,12 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                     <div className="flex justify-between items-center mb-4">
                         <div className="flex items-center gap-2">
                             <span className="text-xs font-bold uppercase bg-blue-200 text-blue-800 px-3 py-1 rounded-full">{activeSegmentType}</span>
-                            {isMoving && <div className="flex items-center gap-1 text-[10px] text-green-600 font-bold animate-pulse"><Navigation2 className="w-3 h-3 rotate-45" /> EM MOVIMENTO</div>}
                         </div>
                         <span className="font-mono text-2xl font-black text-gray-800">{Math.floor(elapsedTime/60).toString().padStart(2,'0')}:{(elapsedTime%60).toString().padStart(2,'0')}</span>
                     </div>
-                    <div className="grid grid-cols-2 gap-4 mb-6">
-                        <div className="bg-white p-4 rounded-xl border border-blue-100 text-center shadow-sm">
-                            <p className="text-gray-400 text-[10px] uppercase font-bold mb-1">Distância</p>
-                            <p className="text-4xl font-black text-blue-700">{currentDistance.toFixed(1)}<span className="text-sm font-bold ml-1">m</span></p>
-                        </div>
-                        <div className="bg-white p-4 rounded-xl border border-blue-100 text-center shadow-sm">
-                            <p className="text-gray-400 text-[10px] uppercase font-bold mb-1">Passos Reais</p>
-                            <p className="text-4xl font-black text-gray-700 flex items-center justify-center gap-1"><Footprints className="w-6 h-6 text-blue-400" /> {currentSteps}</p>
-                        </div>
+                    <div className="bg-white p-6 rounded-xl border border-blue-100 text-center shadow-sm mb-6">
+                        <p className="text-gray-400 text-[10px] uppercase font-bold mb-1">Distância Percorrida (GPS Real)</p>
+                        <p className="text-5xl font-black text-blue-700">{currentDistance.toFixed(1)}<span className="text-sm font-bold ml-1">m</span></p>
                     </div>
                     <button type="button" onClick={handleStopSegment} className="w-full bg-red-600 hover:bg-red-700 text-white py-5 rounded-xl font-bold shadow-xl flex items-center justify-center gap-3 active:scale-95 transition-all text-lg uppercase tracking-widest">
                         <Square className="w-6 h-6 fill-current" />
@@ -524,8 +531,8 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                 </div>
                 {nearbyStreets.length > 0 && (
                     <div className="mt-3 bg-yellow-50 p-3 rounded-xl border border-yellow-100 animate-in fade-in slide-in-from-top-2">
-                        <p className="text-[10px] text-yellow-700 mb-2 font-bold uppercase tracking-tight flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Corrigir Rua:</p>
-                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                        <p className="text-[10px] text-yellow-700 mb-2 font-bold uppercase tracking-tight flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Sugestões próximas:</p>
+                        <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar">
                             {nearbyStreets.map((st, i) => (
                                 <button type="button" key={i} onClick={() => handleCorrectionStreet(st)} className="text-[10px] px-3 py-2 rounded-lg border shadow-sm bg-white text-gray-700 border-gray-200 hover:bg-yellow-100 active:bg-yellow-200 transition-all font-bold">{st}</button>
                             ))}
@@ -553,7 +560,7 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                 <input type="text" value={perimeter} onChange={e => setPerimeter(e.target.value)} className="block w-full rounded-xl border-gray-300 border p-3.5 font-bold text-gray-700 focus:ring-2 focus:ring-ciclus-500 outline-none shadow-sm" placeholder="Ex: Entre rua X e Y" />
                 {nearbyStreets.length > 0 && (
                     <div className="mt-2">
-                        <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Sugestões para Perímetro:</p>
+                        <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Ponto de referência (ruas próximas):</p>
                         <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
                             {nearbyStreets.map((st, i) => (
                                 <button type="button" key={i} onClick={() => handleAddPerimeterStreet(st)} className={`text-[10px] px-2.5 py-1.5 rounded-lg border transition-all shadow-sm font-bold ${selectedPerimeterStreets.includes(st) ? 'bg-ciclus-600 text-white border-ciclus-600' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'}`}>
@@ -567,14 +574,44 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
           </div>
         </section>
 
-        <section className="border-t border-gray-100 pt-6"><h3 className="text-sm font-bold text-gray-400 uppercase mb-3 flex items-center gap-2"><Calculator className="w-4 h-4" /> 3. Totais Acumulados</h3>
+        <section className="border-t border-gray-100 pt-6">
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2"><Calculator className="w-4 h-4" /> 3. Totais Acumulados</h3>
+            {isSupervisorOrAdmin && <span className="text-[9px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-black flex items-center gap-1"><Unlock className="w-2.5 h-2.5" /> EDIÇÃO MANUAL LIBERADA</span>}
+          </div>
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-gray-50 p-4 rounded-xl border border-gray-200 shadow-inner">
-                <div className="relative"><label className="block text-xs font-bold text-gray-700 flex justify-between uppercase">Capinação (m)</label><div className="relative mt-1"><input type="number" value={metrics.capinaM} readOnly className="w-full p-3 border border-gray-300 rounded-lg bg-gray-200 font-mono text-xl font-black text-blue-700" /><Lock className="absolute right-3.5 top-3.5 w-4 h-4 text-gray-300" /></div></div>
-                <div className="relative"><label className="block text-xs font-bold text-gray-700 flex justify-between uppercase">Roçagem (m²)</label><div className="relative mt-1"><input type="number" value={metrics.rocagemM2} readOnly className="w-full p-3 border border-gray-300 rounded-lg bg-gray-200 font-mono text-xl font-black text-emerald-700" /><Lock className="absolute right-3.5 top-3.5 w-4 h-4 text-gray-300" /></div></div>
-                <div><label className="block text-xs font-bold text-gray-500 uppercase">Varrição (m)</label><input type="number" min="0" step="0.1" value={metrics.varricaoM || ''} onChange={e => setMetrics({...metrics, varricaoM: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800" placeholder="0.0" /></div>
-                <div><label className="block text-xs font-bold text-gray-500 uppercase">Pintura de Vias (m)</label><input type="number" min="0" step="0.1" value={metrics.pinturaViasM || ''} onChange={e => setMetrics({...metrics, pinturaViasM: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800" placeholder="0.0" /></div>
-                <div><label className="block text-xs font-bold text-gray-500 uppercase">Pintura de Postes (Unid)</label><input type="number" min="0" step="1" value={metrics.pinturaPostesUnd || ''} onChange={e => setMetrics({...metrics, pinturaPostesUnd: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800" placeholder="0" /></div>
+                <div className="relative">
+                    <label className="block text-xs font-bold text-gray-700 flex justify-between uppercase">Capinação (m)</label>
+                    <div className="relative mt-1">
+                        <input 
+                            type="number" 
+                            step="0.1"
+                            value={metrics.capinaM} 
+                            readOnly={!isSupervisorOrAdmin}
+                            onChange={e => setMetrics({...metrics, capinaM: parseFloat(e.target.value) || 0})}
+                            className={`w-full p-3 border rounded-lg font-mono text-xl font-black text-blue-700 ${!isSupervisorOrAdmin ? 'bg-gray-200 cursor-not-allowed' : 'bg-white border-blue-200 focus:ring-2 focus:ring-blue-500 shadow-sm'}`} 
+                        />
+                        {!isSupervisorOrAdmin ? <Lock className="absolute right-3.5 top-3.5 w-4 h-4 text-gray-300" /> : <Pencil className="absolute right-3.5 top-3.5 w-4 h-4 text-blue-300" />}
+                    </div>
+                </div>
+                <div className="relative">
+                    <label className="block text-xs font-bold text-gray-700 flex justify-between uppercase">Roçagem (m²)</label>
+                    <div className="relative mt-1">
+                        <input 
+                            type="number" 
+                            step="0.1"
+                            value={metrics.rocagemM2} 
+                            readOnly={!isSupervisorOrAdmin}
+                            onChange={e => setMetrics({...metrics, rocagemM2: parseFloat(e.target.value) || 0})}
+                            className={`w-full p-3 border rounded-lg font-mono text-xl font-black text-emerald-700 ${!isSupervisorOrAdmin ? 'bg-gray-200 cursor-not-allowed' : 'bg-white border-emerald-200 focus:ring-2 focus:ring-emerald-500 shadow-sm'}`} 
+                        />
+                        {!isSupervisorOrAdmin ? <Lock className="absolute right-3.5 top-3.5 w-4 h-4 text-gray-300" /> : <Pencil className="absolute right-3.5 top-3.5 w-4 h-4 text-emerald-300" />}
+                    </div>
+                </div>
+                <div><label className="block text-xs font-bold text-gray-500 uppercase">Varrição (m)</label><input type="number" min="0" step="0.1" value={metrics.varricaoM || ''} onChange={e => setMetrics({...metrics, varricaoM: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800 focus:ring-2 focus:ring-ciclus-500" placeholder="0.0" /></div>
+                <div><label className="block text-xs font-bold text-gray-500 uppercase">Pintura de Vias (m)</label><input type="number" min="0" step="0.1" value={metrics.pinturaViasM || ''} onChange={e => setMetrics({...metrics, pinturaViasM: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800 focus:ring-2 focus:ring-ciclus-500" placeholder="0.0" /></div>
+                <div><label className="block text-xs font-bold text-gray-500 uppercase">Pintura de Postes (Unid)</label><input type="number" min="0" step="1" value={metrics.pinturaPostesUnd || ''} onChange={e => setMetrics({...metrics, pinturaPostesUnd: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg mt-1 font-black text-lg text-gray-800 focus:ring-2 focus:ring-ciclus-500" placeholder="0" /></div>
             </div>
           </div>
         </section>
