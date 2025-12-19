@@ -11,9 +11,9 @@ interface RDFormProps {
   existingData?: RDData; 
 }
 
-// Configurações de precisão e filtro
-const GPS_MIN_DISPLACEMENT = 3.5; 
-const GPS_MAX_ACCURACY_THRESHOLD = 45; // Despreza pontos com erro maior que 45m
+// Configurações de precisão e filtro (Essencial para precisão Ciclus)
+const GPS_MIN_DISPLACEMENT = 3.8; // Ignora trepidação menor que 3.8m
+const GPS_MAX_ACCURACY_THRESHOLD = 40; // Despreza pontos com erro maior que 40m
 
 const WIDTH_OPTIONS = [
     { value: '1', label: 'Beira de Calçada' },
@@ -111,20 +111,19 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
     }
   }, [segments]);
 
-  // --- Funções de GPS Melhoradas ---
+  // --- Funções de GPS de Ultra Precisão ---
 
   const getUltraResilientPosition = (attempt = 1): Promise<GeolocationPosition> => {
     return new Promise((resolve, reject) => {
-      // Configurações progressivas conforme a tentativa
       const options: PositionOptions = {
-          enableHighAccuracy: attempt <= 2, // Tenta alta precisão nas 2 primeiras vezes
-          timeout: 10000 + (attempt * 5000), // Aumenta o tempo de espera a cada erro
-          maximumAge: attempt === 1 ? 0 : 3000 // Aceita cache apenas se já falhou uma vez
+          enableHighAccuracy: true, 
+          timeout: 8000 + (attempt * 4000), 
+          maximumAge: attempt === 1 ? 0 : 5000 
       };
       
       navigator.geolocation.getCurrentPosition(resolve, (err) => {
         if (attempt < 3) {
-          console.warn(`Tentativa GPS ${attempt} falhou: ${err.message}. Retentando...`);
+          console.warn(`GPS Attempt ${attempt} failed: ${err.message}. Retrying...`);
           getUltraResilientPosition(attempt + 1).then(resolve).catch(reject);
         } else {
           reject(err);
@@ -146,8 +145,7 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
 
   const fetchNearbyData = async (lat: number, lng: number) => {
     try {
-        // Query do Overpass otimizada para pegar nomes de ruas e bairros
-        const query = `[out:json][timeout:15];(way["highway"]["name"](around:250,${lat},${lng});relation["boundary"="administrative"]["admin_level"="10"](around:250,${lat},${lng}););out tags;`;
+        const query = `[out:json][timeout:15];(way["highway"]["name"](around:300,${lat},${lng});relation["boundary"="administrative"]["admin_level"](around:300,${lat},${lng}););out tags;`;
         const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
         const response = await fetch(url);
         if (response.ok) {
@@ -163,7 +161,7 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
             setNearbyStreets(Array.from(streetNames).sort());
             if (hoodNames.size > 0) setNearbyNeighborhoods(Array.from(hoodNames).sort());
         }
-    } catch (e) { console.warn("Erro ao buscar ruas próximas (Overpass):", e); }
+    } catch (e) { console.warn("Sugestões não disponíveis", e); }
   };
 
   const fetchAddressReverse = async (lat: number, lng: number): Promise<{street: string, hood: string} | null> => {
@@ -178,12 +176,12 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                 return { street: foundStreet, hood: foundHood };
             }
         }
-    } catch (e) { console.warn("Erro no geocoding reverso (Nominatim):", e); }
+    } catch (e) { console.warn("Endereço não identificado", e); }
     return null;
   };
 
   const handleStartSegment = async (type: 'CAPINAÇÃO' | 'ROCAGEM') => {
-      setLoadingGPS({ active: true, message: 'Obtendo sinal estável do GPS...' });
+      setLoadingGPS({ active: true, message: 'Capturando Ponto Zero (Satelite)...' });
       setActiveSegmentType(type);
       
       try {
@@ -191,7 +189,6 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
         const { latitude: lat, longitude: lng, accuracy } = pos.coords;
         setGpsAccuracy(accuracy);
         
-        // Dispara buscas de endereço imediatamente
         fetchNearbyData(lat, lng);
         fetchAddressReverse(lat, lng).then(addr => {
           if (addr) {
@@ -217,44 +214,40 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
             const acc = p.coords.accuracy;
             setGpsAccuracy(acc);
             
-            // FILTRO DE QUALIDADE: Só aceita o ponto se a precisão for aceitável
-            if (acc > GPS_MAX_ACCURACY_THRESHOLD) {
-                console.warn(`Ponto ignorado: Baixa precisão (${acc.toFixed(1)}m)`);
-                return;
-            }
+            // FILTRO DE QUALIDADE: Só aceita pontos com precisão mínima
+            if (acc > GPS_MAX_ACCURACY_THRESHOLD) return;
 
             const nLat = p.coords.latitude; 
             const nLng = p.coords.longitude;
             
             if (lastLocationRef.current) {
                 const d = calculateDistanceGPS(lastLocationRef.current.lat, lastLocationRef.current.lng, nLat, nLng);
-                // FILTRO DE MOVIMENTO: Só acumula se o deslocamento for real (evita o "balanço" do sinal parado)
+                // FILTRO DE DESLOCAMENTO: Evita o "pulo" do GPS em local parado
                 if (d >= GPS_MIN_DISPLACEMENT) {
                     setCurrentDistance(prev => prev + d);
                     setCurrentTrackPoints(prevPoints => [...prevPoints, {lat: nLat, lng: nLng}]);
                     lastLocationRef.current = { lat: nLat, lng: nLng };
-                    // Atualiza ruas sugeridas conforme se move
-                    if (Math.random() > 0.8) fetchNearbyData(nLat, nLng);
+                    // Tenta atualizar ruas próximas no percurso ocasionalmente
+                    if (Math.random() > 0.9) fetchNearbyData(nLat, nLng);
                 }
             }
         }, (err) => {
-            if (err.code === err.TIMEOUT) {
-              console.warn("GPS Watch: Aguardando sinal...");
-            } else {
-              console.error("Erro crítico no GPS Watch:", err.message);
+            // Ignora timeouts esporádicos do sensor sem interromper o serviço
+            if (err.code !== err.TIMEOUT) {
+                console.error("Sensor GPS Interrompido:", err.message);
             }
-        }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }); 
+        }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 30000 }); 
 
         setLoadingGPS({ active: false, message: '' });
       } catch (err: any) {
         setLoadingGPS({ active: false, message: '' });
         setActiveSegmentType(null);
-        alert(`Não foi possível iniciar o rastreio: ${err.message || 'Sinal de GPS ausente'}. Certifique-se de que o local é aberto e o GPS está ativado.`);
+        alert(`FALHA DE SINAL: ${err.message}. Certifique-se de estar a céu aberto e com o GPS no modo "Alta Precisão".`);
       }
   };
 
   const handleStopSegment = async () => {
-      setLoadingGPS({ active: true, message: 'Capturando posição final...' });
+      setLoadingGPS({ active: true, message: 'Gravando Ponto Final...' });
       if (watchIdRef.current !== null) { navigator.geolocation.clearWatch(watchIdRef.current); watchIdRef.current = null; }
       if (timerIntervalRef.current) { clearInterval(timerIntervalRef.current); timerIntervalRef.current = null; }
       
@@ -297,12 +290,12 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
         setLoadingGPS({ active: false, message: '' });
         setIsTracking(false);
         setActiveSegmentType(null);
-        alert("Sinal de GPS perdido no encerramento. O trecho será gravado com os últimos pontos válidos.");
+        alert("Sinal de GPS instável ao finalizar. O trecho foi encerrado com a última posição conhecida.");
       }
   };
 
   const handleForceUpdateLocation = async () => {
-    setLoadingGPS({ active: true, message: 'Buscando sugestões de endereço...' });
+    setLoadingGPS({ active: true, message: 'Localizando endereços próximos...' });
     try {
       const pos = await getUltraResilientPosition();
       const { latitude: lat, longitude: lng, accuracy } = pos.coords;
@@ -318,7 +311,7 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
       setLoadingGPS({ active: false, message: '' });
     } catch (err: any) {
       setLoadingGPS({ active: false, message: '' });
-      alert("Não foi possível obter endereços próximos. Verifique se o GPS está ativado.");
+      alert("Não foi possível identificar nomes de ruas. Verifique sua conexão de dados.");
     }
   };
 
@@ -398,7 +391,7 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                     <Navigation2 className="w-8 h-8 text-white absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-bounce" />
                   </div>
                   <p className="font-black uppercase tracking-widest text-lg">{loadingGPS.message}</p>
-                  <p className="text-xs opacity-60">Aguardando coordenadas de satélite de alta precisão...</p>
+                  <p className="text-xs opacity-60">Sintonizando satélites para captura de metragem precisa...</p>
               </div>
           </div>
       )}
@@ -407,9 +400,9 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
         <h2 className="text-lg font-bold">{existingData ? 'Corrigir RD' : 'Novo Relatório Diário'}</h2>
         <div className="flex items-center gap-2">
            {gpsAccuracy && (
-               <div className={`px-2 py-0.5 rounded-full flex items-center gap-1 text-[10px] font-bold ${gpsAccuracy < 20 ? 'bg-green-500/20 text-green-300' : gpsAccuracy < 40 ? 'bg-yellow-500/20 text-yellow-300' : 'bg-red-500/20 text-red-300'}`}>
-                   {gpsAccuracy < 20 ? <SignalHigh className="w-3 h-3" /> : gpsAccuracy < 40 ? <Signal className="w-3 h-3" /> : <SignalLow className="w-3 h-3" />}
-                   {gpsAccuracy.toFixed(0)}m
+               <div className={`px-2 py-0.5 rounded-full flex items-center gap-1 text-[10px] font-bold ${gpsAccuracy < 20 ? 'bg-green-500/20 text-green-300' : gpsAccuracy < 45 ? 'bg-yellow-500/20 text-yellow-300' : 'bg-red-500/20 text-red-300'}`}>
+                   {gpsAccuracy < 20 ? <SignalHigh className="w-3 h-3" /> : gpsAccuracy < 45 ? <Signal className="w-3 h-3" /> : <SignalLow className="w-3 h-3" />}
+                   Sinal: {gpsAccuracy.toFixed(0)}m
                </div>
            )}
            <span className="text-xs bg-ciclus-800 px-2 py-1 rounded font-mono">{currentUser.registration}</span>
@@ -461,12 +454,12 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                         <span className="font-mono text-2xl font-black text-gray-800">{Math.floor(elapsedTime/60).toString().padStart(2,'0')}:{(elapsedTime%60).toString().padStart(2,'0')}</span>
                     </div>
                     <div className="bg-white p-6 rounded-xl border border-blue-100 text-center shadow-sm mb-6">
-                        <p className="text-gray-400 text-[10px] uppercase font-bold mb-1">Distância Percorrida (GPS Real)</p>
+                        <p className="text-gray-400 text-[10px] uppercase font-bold mb-1">Distância Percorrida (Real Satélite)</p>
                         <p className="text-5xl font-black text-blue-700">{currentDistance.toFixed(1)}<span className="text-sm font-bold ml-1">m</span></p>
                     </div>
                     <button type="button" onClick={handleStopSegment} className="w-full bg-red-600 hover:bg-red-700 text-white py-5 rounded-xl font-bold shadow-xl flex items-center justify-center gap-3 active:scale-95 transition-all text-lg uppercase tracking-widest">
                         <Square className="w-6 h-6 fill-current" />
-                        Parar e Gravar Trecho
+                        Encerrar Trecho
                     </button>
                 </div>
               )}
@@ -523,16 +516,16 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
             <div className="md:col-span-2 relative z-30">
                 <div className="flex justify-between items-center mb-1">
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">Logradouro / Rua Principal</label>
-                    <button type="button" onClick={handleForceUpdateLocation} className="text-ciclus-600 text-[10px] font-bold flex items-center gap-1 hover:underline active:scale-95 transition-all"><RefreshCw className={`w-3 h-3 ${loadingGPS.active ? 'animate-spin' : ''}`} /> REFRESH GPS</button>
+                    <button type="button" onClick={handleForceUpdateLocation} className="text-ciclus-600 text-[10px] font-bold flex items-center gap-1 hover:underline active:scale-95 transition-all"><RefreshCw className={`w-3 h-3 ${loadingGPS.active ? 'animate-spin' : ''}`} /> ATUALIZAR SUGESTÕES</button>
                 </div>
                 <div className="relative">
-                    <input required type="text" value={street} onChange={e => setStreet(e.target.value)} className="mt-1 block w-full rounded-xl border-gray-300 border p-4 pl-11 font-black text-gray-800 focus:ring-2 focus:ring-ciclus-500 outline-none shadow-sm" placeholder="Rua do serviço..." />
+                    <input required type="text" value={street} onChange={e => setStreet(e.target.value)} className="mt-1 block w-full rounded-xl border-gray-300 border p-4 pl-11 font-black text-gray-800 focus:ring-2 focus:ring-ciclus-500 outline-none shadow-sm" placeholder="Aguardando GPS..." />
                     <div className="absolute left-3.5 top-4.5 text-gray-400"><MapPin className="w-5 h-5" /></div>
                 </div>
                 {nearbyStreets.length > 0 && (
                     <div className="mt-3 bg-yellow-50 p-3 rounded-xl border border-yellow-100 animate-in fade-in slide-in-from-top-2">
-                        <p className="text-[10px] text-yellow-700 mb-2 font-bold uppercase tracking-tight flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Sugestões próximas:</p>
-                        <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto no-scrollbar">
+                        <p className="text-[10px] text-yellow-700 mb-2 font-bold uppercase tracking-tight flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Sugestões baseadas no GPS:</p>
+                        <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto no-scrollbar">
                             {nearbyStreets.map((st, i) => (
                                 <button type="button" key={i} onClick={() => handleCorrectionStreet(st)} className="text-[10px] px-3 py-2 rounded-lg border shadow-sm bg-white text-gray-700 border-gray-200 hover:bg-yellow-100 active:bg-yellow-200 transition-all font-bold">{st}</button>
                             ))}
@@ -560,7 +553,7 @@ export const RDForm: React.FC<RDFormProps> = ({ currentUser, onSave, onCancel, e
                 <input type="text" value={perimeter} onChange={e => setPerimeter(e.target.value)} className="block w-full rounded-xl border-gray-300 border p-3.5 font-bold text-gray-700 focus:ring-2 focus:ring-ciclus-500 outline-none shadow-sm" placeholder="Ex: Entre rua X e Y" />
                 {nearbyStreets.length > 0 && (
                     <div className="mt-2">
-                        <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Ponto de referência (ruas próximas):</p>
+                        <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Referência automática:</p>
                         <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
                             {nearbyStreets.map((st, i) => (
                                 <button type="button" key={i} onClick={() => handleAddPerimeterStreet(st)} className={`text-[10px] px-2.5 py-1.5 rounded-lg border transition-all shadow-sm font-bold ${selectedPerimeterStreets.includes(st) ? 'bg-ciclus-600 text-white border-ciclus-600' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-100'}`}>
